@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grzybobranie-ml"
+version = "0.1.0"
+description = "Standalone ML training, OOD calibration, and TFLite export pipeline for Grzybobranie AI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Proprietary"}
+dependencies = [
+    "numpy>=2.0.0",
+    "pillow>=10.0.0",
+    "timm>=1.0.0",
+    "huggingface-hub>=0.26.0",
+    "jsonschema>=4.20.0",
+    "scipy>=1.11.0",
+    "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

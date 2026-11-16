@@ -1,0 +1,47 @@
+# Python & venv
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Sekrety i sól podziału (NIGDY W GIT)
+.env
+.env.*
+!.env.example
+*split_salt*
+*.pem
+*.key
+credentials.json
+
+# Lokalne kopie zapasowe
+*.bak
+
+# Ignoruj zawartość folderów data/ i artifacts/, ale zachowaj strukturę (.gitkeep)
+data/**
+!data/**/
+!data/**/.gitkeep
+!data/local_drop/README.md
+!data/local_drop/example_drop.csv
+
+artifacts/**
+!artifacts/**/
+!artifacts/**/.gitkeep
+
+# Blokada ciężkich plików w całym repozytorium (poza oficjalnymi w configs/)
+*.csv
+!configs/*.csv
+!data/local_drop/example_drop.csv
+*.jsonl
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.pt
+*.pth
+*.onnx
+*.keras
+*.h5
+*.tflite
