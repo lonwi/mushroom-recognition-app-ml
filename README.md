@@ -43,10 +43,19 @@ What exists today is the project rule set, packaging metadata (`pyproject.toml`)
 ├── src/
 │   └── grzybobranie_ml/       # Package root (empty in v0.1.0; modules planned)
 ├── tests/                     # Planned: contract, preprocessing & math unit tests
-├── configs/                   # Planned: coverage CSVs and look-alike pair cards
-├── schemas/                   # Planned: model-manifest.schema.json
+├── configs/
+│   ├── pokrycie-67.csv        # mini+ coverage and min training-image thresholds
+│   └── karty_sobowtory.json   # look-alike / dangerous pairs
+├── schemas/
+│   └── model-manifest.schema.json  # model-manifest.json contract (v1.0.1)
 ├── docs/
-│   └── decisions/             # Planned: architecture & decision records
+│   ├── soul.md                # Training-bot constitution
+│   ├── prompty.md             # Stage prompts P0–P9
+│   ├── skille.md              # Suggested skills and connectors
+│   └── decisions/
+│       ├── decyzje.md
+│       ├── krok3-decyzje.md
+│       └── 2026-11-16-schema-v1-clarifications.md
 ├── .agents/
 │   └── skills/                # Planned: local agent skills
 ├── data/                      # [GITIGNORED CONTENT] Working data (structure kept)
@@ -61,7 +70,7 @@ What exists today is the project rule set, packaging metadata (`pyproject.toml`)
     └── logs/                  # Planned: training JSONL & Trackio logs
 ```
 
-Planned documentation that is not in this repository yet: `soul.md`, `prompty.md`, `skille.md`, `configs/pokrycie-*.csv`, `configs/karty_sobowtory.json`, `schemas/model-manifest.schema.json`, and `data/local_drop/example_drop.csv`.
+Still planned and not in this repository yet: `data/local_drop/example_drop.csv` and content under `.agents/skills/`.
 
 ## 3. Quickstart (Fresh Machine Setup)
 
@@ -161,4 +170,4 @@ pytest
 
 ## 5. Connecting an AI Agent or Bot
 
-Read `AGENTS.md` before changing this repository. Planned companion files (`soul.md`, `prompty.md`, `.agents/skills/`) may be added later for the training-bot workflow (stages P0–P9).
+Read `AGENTS.md` before changing this repository. The training-bot constitution and stage prompts are in `docs/soul.md` and `docs/prompty.md` (P0–P9). Local skills under `.agents/skills/` may be added later.

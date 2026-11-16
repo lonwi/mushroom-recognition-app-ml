@@ -9,7 +9,7 @@ This repository is the standalone ML pipeline for **Grzybobranie AI**. It is cur
 3. **Paths.** Use the repository `.venv` (`source .venv/bin/activate`). Keep code, `data/`, and `artifacts/` inside this repository on native Linux `ext4` (WSL2: never `/mnt/c`). Do not hard-code personal home directories.
 4. **Hugging Face remotes** come from the environment (see `.env.example`): `HF_DATASET_REPO` and `HF_MODEL_REPO`. Do not embed private repository names or tokens in source, docs, or commits. Copy `.env.example` to `.env` locally; `.env` is gitignored.
 5. **Licensing.** Training photos: only `CC0`, `CC BY`, `CC BY-NC`, `CC BY-SA` (versioned), and `pd_self`. Forbidden: `DF20` and `DF24` (images and weights matching `*ft_df20*`), AI-generated images, illustrations, and `ND` licenses. Backbones from `timm`: only `Apache-2.0`, `MIT`, or `BSD` by default (`ConvNeXt V2` and Apple-licensed `MobileViT`/`FastViT` stay disabled).
-6. **Safety.** The model must not output edibility verdicts. Planned look-alike pairs live in `configs/karty_sobowtory.json` (not present yet). Planned ship-gate targets (fail closed): `confidentToxicAsEdible == 0`, per-pair confusion $\le 0.05$, `highStakesRecallMin >= 0.85`, `tfliteAgreement >= 0.99`.
+6. **Safety.** The model must not output edibility verdicts. Look-alike pairs live in `configs/karty_sobowtory.json`. Planned ship-gate targets (fail closed): `confidentToxicAsEdible == 0`, per-pair confusion $\le 0.05$, `highStakesRecallMin >= 0.85`, `tfliteAgreement >= 0.99`.
 
 ## 2. CLI and layout
 
@@ -27,3 +27,4 @@ Planned modules (missing in v0.1.0): `local_drop`, `prepare_data`, `cache_manage
 - Never commit secrets, tokens, credentials, or `split_salt`. The salt file stays outside git (default `~/.config/grzybobranie/split_salt`, overridable with `GRZYBOBRANIE_SPLIT_SALT_PATH`).
 - Do not start training, download datasets, or call unimplemented modules unless the user explicitly asked for that step.
 - Prefer extending the package layout over adding flat scripts at `src/*.py`.
+- When acting as the training bot, read `docs/soul.md` and execute stages P0–P9 from `docs/prompty.md`. The manifest contract is `schemas/model-manifest.schema.json` (see also `docs/decisions/2026-11-16-schema-v1-clarifications.md`).
