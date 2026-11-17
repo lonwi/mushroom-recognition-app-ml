@@ -442,7 +442,7 @@
           "temperature": 1.5
         },
         "ood": {
-          "energyThreshold": -6.0,
+          "energyThreshold": -6.000000000000001,
           "minTop1Prob": 0.4,
           "energyTemperature": 1.2,
           "fusion": {

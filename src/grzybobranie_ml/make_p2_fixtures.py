@@ -155,9 +155,22 @@ def build_decision_cases() -> dict[str, Any]:
     )
 
     # Boundary: E == energyThreshold, p_top1 comfortable → ok (strict >).
+    # The constructed energy can be 1 ULP off the -6.0 target. Give this
+    # case its own manifest whose threshold equals the computed energy,
+    # so the fixture exercises exact equality (a 1-ULP gap would not
+    # distinguish E > threshold from E >= threshold). high_energy_ood
+    # remains the separate above-threshold case.
     boundary_e_logits = _probs_to_logits(
         peaked, t_cal, energy_target=-6.0, t_energy=t_en
     )
+    boundary_e_value = energy(boundary_e_logits, t_en)
+    boundary_e_manifest = _manifest(
+        t_cal=t_cal, t_energy=t_en, energy_threshold=boundary_e_value
+    )
+    if energy(boundary_e_logits, t_en) != boundary_e_manifest["ood"]["energyThreshold"]:
+        raise RuntimeError(
+            "boundary_energy_equal: computed energy is not exactly equal to the threshold"
+        )
 
     # Boundary: p_top1 == 0.40, energy comfortable → ok (strict <).
     boundary_p = [0.40, 0.25, 0.15, 0.08, 0.05, 0.04, 0.02, 0.01]
@@ -236,9 +249,9 @@ def build_decision_cases() -> dict[str, Any]:
         _case(
             "boundary_energy_equal",
             "E == energyThreshold. The energy comparison is strict (E > threshold), so this is not OOD.",
-            both,
+            boundary_e_manifest,
             boundary_e_logits,
-            _expected_single(boundary_e_logits, both),
+            _expected_single(boundary_e_logits, boundary_e_manifest),
         ),
         _case(
             "boundary_top1_equal",

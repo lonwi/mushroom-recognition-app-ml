@@ -56,7 +56,7 @@ STATUS_OK = "ok"
 
 TOP_K_CANDIDATES = 3
 MAX_PHOTOS = 3
-EPSILON = 0.0  # Σc <= 0 → equal weights (schema: "równe wagi gdy Σc = 0")
+EPSILON = 1e-15  # Σc <= EPSILON → equal weights (schema: "równe wagi gdy Σc = 0")
 
 
 def _as_logits(z: Sequence[float] | np.ndarray) -> np.ndarray:
@@ -247,8 +247,13 @@ def _fusion_weights(accepted: Sequence[np.ndarray], t_prob: float) -> np.ndarray
 
     ``c_v = 1 - H_v / ln K``. A peaked distribution has small entropy and
     therefore a larger weight. A uniform distribution has ``H = ln K`` and
-    ``c = 0``. If every accepted photo is uniform, ``Σc = 0`` and the
-    weights fall back to ``1/m`` (schema wording).
+    ``c = 0``. Each ``c_v`` is clamped at 0, because a near-uniform
+    entropy can exceed ``ln K`` by a fraction of an ULP and would
+    otherwise produce a negative weight. If every accepted photo is
+    uniform, ``Σc = 0`` and the weights fall back to ``1/m`` (schema
+    wording). ``Σc <= EPSILON`` (``1e-15``) is treated as that zero
+    total, so a float64 residue cannot yield mixed-sign or
+    winner-takes-all weights.
     """
     k = int(accepted[0].size)
     log_k = float(np.log(np.float64(k)))
@@ -258,6 +263,7 @@ def _fusion_weights(accepted: Sequence[np.ndarray], t_prob: float) -> np.ndarray
             raise ValueError("all accepted photos must have the same K")
         probs = softmax(logits, t_prob)
         confidences[i] = 1.0 - (_entropy(probs) / log_k)
+    confidences = np.maximum(confidences, 0.0)
     total = float(np.sum(confidences))
     if total <= EPSILON:
         return np.full(len(accepted), 1.0 / len(accepted), dtype=np.float64)

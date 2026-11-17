@@ -10,6 +10,7 @@ Taken verbatim from P5 and the schema description of `fusionWeights.method = ent
 - `H_v = -Σ_k p_v[k] ln p_v[k]` (natural log). `0 ln 0` is treated as 0.
 - `c_v = 1 - H_v / ln K`, where `K` is the length of the logit vector (head size).
 - `w_v = c_v / Σ_u c_u`. If `Σ c = 0` (every accepted photo is uniform), weights are `1/m`, as the schema says ("równe wagi gdy Σc = 0").
+- In float64 a near-uniform `H_v` can exceed `ln K` by a fraction of an ULP, so each `c_v` is clamped at 0 before the sum. A total `Σc <= 1e-15` is treated as `Σc = 0` (equal weights), so a round-off residue cannot produce mixed-sign or winner-takes-all weights.
 - `z̄ = Σ_v w_v z_v` over **accepted** photos only.
 
 `m` is the number of photos whose per-photo status is `ok`. Input is at most 3 photos (`fusionWeights.maxPhotos`). More than 3 is an error, not a silent truncate.

@@ -11,6 +11,7 @@ from grzybobranie_ml.recognition_math import (
     STATUS_OK,
     STATUS_OOD,
     STATUS_UNCLEAR,
+    _fusion_weights,
     decide_single,
     energy,
     fuse,
@@ -119,14 +120,16 @@ def test_decide_energy_gate_and_strict_boundary() -> None:
     target = np.array([0.80, 0.10, 0.05, 0.03, 0.02], dtype=np.float64)
     z0 = np.log(target)
     e0 = energy(z0, 1.0)
-    # Put energy exactly on the threshold.
+    # Put energy on the threshold, then use that computed value as the
+    # manifest threshold so the test exercises exact equality.
     z_eq = z0 + (e0 - (-6.0))
-    assert energy(z_eq, 1.0) == pytest.approx(-6.0, abs=1e-12)
-    equal = decide_single(z_eq, _manifest())
+    e_eq = energy(z_eq, 1.0)
+    equal = decide_single(z_eq, _manifest(energyThreshold=e_eq))
+    assert equal["energy"] == e_eq
     assert equal["status"] == STATUS_OK
     # Just above the threshold (less negative / higher energy) is OOD.
     z_over = z_eq - 0.05
-    over = decide_single(z_over, _manifest())
+    over = decide_single(z_over, _manifest(energyThreshold=e_eq))
     assert over["status"] == STATUS_OOD
     assert over["candidates"] == []
 
@@ -204,6 +207,16 @@ def test_fuse_m2_uses_fusion_thresholds_and_entropy_weights() -> None:
     # The more peaked photo must receive the larger entropy weight.
     assert result["weights"][0] > result["weights"][1]
     assert abs(sum(result["weights"]) - 1.0) < 1e-12
+
+
+def test_fusion_weights_clamp_negative_roundoff() -> None:
+    # Uniform softmax can have H slightly above ln K, which would make c < 0.
+    uniforms = [np.zeros(5, dtype=np.float64), np.zeros(5, dtype=np.float64) + 3.0]
+    weights = _fusion_weights(uniforms, t_prob=1.0)
+    assert np.all(weights >= 0.0)
+    assert abs(float(np.sum(weights)) - 1.0) < 1e-15
+    assert weights[0] == pytest.approx(0.5, abs=1e-12)
+    assert weights[1] == pytest.approx(0.5, abs=1e-12)
 
 
 def test_fuse_equal_weights_when_all_accepted_are_uniform() -> None:

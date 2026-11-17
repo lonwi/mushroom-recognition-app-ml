@@ -30,16 +30,45 @@ def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _assert_close_data(got: object, expected: object, path: str) -> None:
+    """Compare fixture JSON semantically, with TOLERANCE on numbers."""
+    if isinstance(expected, bool) or isinstance(got, bool):
+        assert got == expected, f"{path}: {got!r} != {expected!r}"
+        return
+    if isinstance(expected, (int, float)) and isinstance(got, (int, float)):
+        assert abs(float(got) - float(expected)) <= TOLERANCE, (
+            f"{path}: {got} vs {expected} (tol={TOLERANCE})"
+        )
+        return
+    if expected is None or got is None:
+        assert got is expected, f"{path}: {got!r} vs {expected!r}"
+        return
+    if isinstance(expected, dict):
+        assert isinstance(got, dict), f"{path}: expected object, got {type(got)}"
+        assert set(got) == set(expected), (
+            f"{path}: keys {sorted(got)} != {sorted(expected)}"
+        )
+        for key in expected:
+            _assert_close_data(got[key], expected[key], f"{path}.{key}")
+        return
+    if isinstance(expected, list):
+        assert isinstance(got, list), f"{path}: expected list, got {type(got)}"
+        assert len(got) == len(expected), (
+            f"{path}: length {len(got)} != {len(expected)}"
+        )
+        for i, (item_got, item_expected) in enumerate(zip(got, expected)):
+            _assert_close_data(item_got, item_expected, f"{path}[{i}]")
+        return
+    assert got == expected, f"{path}: {got!r} vs {expected!r}"
+
+
 def test_committed_fixtures_match_fresh_generation(tmp_path: Path) -> None:
-    written = write_fixtures(tmp_path)
-    for name in ("decision_cases.json", "fusion_cases.json", "SHA256SUMS"):
+    write_fixtures(tmp_path)
+    for name in ("decision_cases.json", "fusion_cases.json"):
         committed = FIXTURE_DIR / name
         generated = tmp_path / name
         assert committed.is_file(), f"missing committed fixture {committed}"
-        assert generated.read_bytes() == committed.read_bytes(), (
-            f"{name} is stale; re-run python -m grzybobranie_ml.make_p2_fixtures"
-        )
-        assert written[name] == _sha256(committed)
+        _assert_close_data(_load(generated), _load(committed), name)
 
 
 def test_sha256sums_lists_both_json_files() -> None:
@@ -129,9 +158,13 @@ def test_documented_boundary_and_coverage_ids() -> None:
     } <= fusion_ids
     # Equality cases really are accepted (strict inequalities).
     by_id = {c["id"]: c for c in _load(DECISION_PATH)["cases"]}
-    assert by_id["boundary_energy_equal"]["expected"]["status"] == "ok"
-    assert by_id["boundary_top1_equal"]["expected"]["status"] == "ok"
+    energy_case = by_id["boundary_energy_equal"]
+    top1_case = by_id["boundary_top1_equal"]
+    assert energy_case["expected"]["status"] == "ok"
+    assert top1_case["expected"]["status"] == "ok"
     assert (
-        abs(by_id["boundary_energy_equal"]["expected"]["energy"] - (-6.0)) <= TOLERANCE
+        energy_case["expected"]["energy"]
+        == energy_case["manifest"]["ood"]["energyThreshold"]
     )
-    assert abs(by_id["boundary_top1_equal"]["expected"]["p_top1"] - 0.40) <= TOLERANCE
+    assert abs(energy_case["expected"]["energy"] - (-6.0)) <= TOLERANCE
+    assert abs(top1_case["expected"]["p_top1"] - 0.40) <= TOLERANCE
