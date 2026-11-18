@@ -171,3 +171,7 @@ pytest
 ## 5. Connecting an AI Agent or Bot
 
 Read `AGENTS.md` before changing this repository. The training-bot constitution and stage prompts are in `docs/soul.md` and `docs/prompty.md` (P0–P9). Local skills under `.agents/skills/` may be added later.
+
+## 6. Licencja
+
+Ten projekt jest udostępniany na licencji [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). Pełny tekst znajduje się w pliku `LICENSE`.
