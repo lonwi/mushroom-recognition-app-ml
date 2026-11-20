@@ -1,10 +1,13 @@
 {
   "_meta": {
-    "status": "propozycja_do_zatwierdzenia_przez_Wojciecha",
-    "nie_zatwierdzone": true,
-    "data": "2026-11-10",
+    "status": "zatwierdzone_przez_Wojciecha",
+    "zatwierdzone": true,
+    "nie_zatwierdzone": false,
+    "data": "2026-11-20",
+    "data_propozycji": "2026-11-10",
+    "zatwierdzil": "Wojciech",
     "strefa": "Europe/Warsaw",
-    "opis": "Karty sobowtórów dla 67 klas mini+ oraz proponowane DANGEROUS_PAIRS. To materiał wejściowy dla lokalnego bota treningowego — lista par wymaga akceptacji Wojciecha. Fakty mykologiczne pochodzą wyłącznie z materiałów projektu (broszura LP 2016 — parafraza, karty atlasu, karty grzyby, model_tiers/LOOK_PAIRS, porównania hełmówka/opieńka). Gdzie nie było pewnego opisu cech, pole cechy_odrozniajace jest null.",
+    "opis": "Karty sobowtórów dla 67 klas mini+ oraz zatwierdzone DANGEROUS_PAIRS. Materiał wejściowy dla bota treningowego — lista par została zatwierdzona przez Wojciecha jako źródło DANGEROUS_PAIRS dla ship gates. Fakty mykologiczne pochodzą wyłącznie z materiałów projektu (broszura LP 2016 — parafraza, karty atlasu, karty grzyby, model_tiers/LOOK_PAIRS, porównania hełmówka/opieńka). Gdzie nie było pewnego opisu cech, pole cechy_odrozniajace jest null.",
     "nie_uprawnia_do_zbioru": "Karty mają charakter informacyjny i nie uprawniają do zbioru ani spożycia.",
     "zrodla": {
       "BG": "Bielawska, Bezpieczne grzybobranie, CILP+WSSE 2016 (parafraza, bez cytatu ciągłego)",
