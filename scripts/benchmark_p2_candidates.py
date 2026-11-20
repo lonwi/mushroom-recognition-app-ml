@@ -189,6 +189,7 @@ def run_benchmarks() -> list[dict[str, Any]]:
             "gmacs_224": round(gmacs_224, 3),
             "gmacs_256": round(gmacs_256, 3),
             "size_fp32_mb": round(size_224_bytes / 1024 / 1024, 2),
+            "size_256_fp32_mb": round(size_256_bytes / 1024 / 1024, 2),
             "size_fp16_est_mb": round((size_224_bytes / 2) / 1024 / 1024, 2),
             "size_int8_est_mb": round((size_224_bytes / 4) / 1024 / 1024, 2),
             "litert_cpu_ms_224": round(lat_litert_224, 2),
