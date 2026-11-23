@@ -1,7 +1,7 @@
 # Wybór Architektury Modelu pod Urządzenia Mobilne (Etap P2) 📱🔬
 
-**Status:** Przygotowany do decyzji Wojciecha  
-**Data analizy:** 2026-11-20  
+**Status:** Zatwierdzony przez Wojciecha (2026-11-23)  
+**Data analizy:** 2026-11-20 (zatwierdzenie: 2026-11-23)  
 **Framework:** PyTorch 2.15 + `timm` (1.0.31) $\to$ LiteRT 2.3.0 (`litert-torch` 0.10.0 / `ai-edge-litert`)  
 **Powiązane dokumenty:** `docs/prompty.md` (P2), `docs/soul.md` (§2.1), `DATA_CONTRACT.md`, `configs/karty_sobowtory.json`
 
@@ -12,7 +12,7 @@
 Model klasyfikacji grzybów wdrażany jest w aplikacji React Native za pośrednictwem biblioteki `react-native-fast-tflite` (3.0.1) oraz silnika LiteRT (dawniej TensorFlow Lite).
 
 Zgodnie ze specyfikacją projektu model musi spełniać twarde brzegowe ograniczenia wydajnościowe:
-1. **Czas pojedynczego skanu:** $\le 2$ s p95 na procesorze telefonu referencyjnego (**Xiaomi Mi 11 5G**, Snapdragon 888, CPU).
+1. **Czas pojedynczego skanu:** $\le 2$ s p95 na procesorze telefonu referencyjnego (**Xiaomi Mi 11 Lite 5G**, Snapdragon 780G, CPU).
 2. **Czas sesji wielozdjęciowej (3 zdjęcia):** $\le 5$ s p95 łącznie z preprocessingiem i fuzją.
 3. **Pojemność pamięci RAM i brak OOM:** Bezproblemowe działanie na urządzeniu budżetowym o małej pamięci (**Huawei P smart 2019**, 3 GB RAM, Kirin 710).
 4. **Rozmiar pliku modelu w APK:** Cała paczka APK $\le 100$ MB, plik modelu docelowo **$\le 20$ MB** (preferowane wagi po kwantyzacji FP16 lub INT8 PTQ: 2,5–8 MB).
@@ -115,14 +115,17 @@ W oparciu o kryteria: (1) licencję wag, (2) czystą konwersję LiteRT, (3) narz
 
 Zgodnie z zasadą projektową:
 * Dla każdego z wybranych kandydatów utrzymujemy **oba rozmiary wejścia: 224×224 oraz 256×256**.
-* Ostateczny wybór optymalnego rozmiaru i łańcucha preprocessingu (EXIF, box do 448, resize `box` z antialias, normalizacja $[-1, 1]$) zatwierdzi Wojciech po fizycznym pomiarze na Xiaomi Mi 11 5G (P6/P7).
+* Ostateczny wybór optymalnego rozmiaru i łańcucha preprocessingu (EXIF, box do 448, resize `box` z antialias, normalizacja $[-1, 1]$) zatwierdzi Wojciech po fizycznym pomiarze na Xiaomi Mi 11 Lite 5G (P6/P7).
 * Do tego czasu wymiar wejścia w manifeście pozostaje parametrem dynamicznym `preprocessing.inputSize`.
 
 ---
 
-## 7. Podsumowanie i pytanie do Wojciecha
+## 7. Decyzja Wojciecha (Zatwierdzona 2026-11-23)
 
-Wszystkie atrapy modeli zostały poprawnie wyeksportowane i zweryfikowane pod kątem LiteRT.
+Wojciech zatwierdził 3 kandydatów według rekomendacji do treningu w Etapie P3 w obu rozmiarach (224 oraz 256):
+1. **`mobilenetv4_conv_small.e2400_r224_in1k`** (2,58 M params, 1,09 ms LiteRT CPU, ~2,46 MB INT8)
+2. **`tf_efficientnet_lite0.in1k`** (3,46 M params, 2,76 ms LiteRT CPU, ~3,28 MB INT8)
+3. **`mobilenetv3_large_100.ra4_e3600_r224_in1k`** (4,29 M params, 1,82 ms LiteRT CPU, ~4,09 MB INT8)
+*(Rezerwa pojemnościowa: `mobilenetv4_conv_medium.e500_r256_in1k`).*
 
-**Pytanie do Wojciecha (zgodnie z promptem P2):**  
-**Którzy 2–3 kandydaci idą do treningu w obu rozmiarach 224 i 256? (Rozmiar wejścia i preprocessing zatwierdzimy po pomiarze na Xiaomi Mi 11 5G.)**
+Zgodnie z uściśleniem Wojciecha, urządzeniem referencyjnym w testach brzegowych jest **Xiaomi Mi 11 Lite 5G**.
