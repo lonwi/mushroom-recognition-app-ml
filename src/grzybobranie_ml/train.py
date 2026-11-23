@@ -174,65 +174,110 @@ class MushroomSplitDataset(Dataset):
         self.transform = transform
         self.mock_if_missing = mock_if_missing
 
-        self.records: list[dict[str, str]] = []
+        raw_records: list[dict[str, str]] = []
         with open(self.csv_path, encoding="utf-8") as f:
             reader = csv.DictReader(f)
-            for row in reader:
-                self.records.append(row)
+            raw_records = list(reader)
 
-        if not self.records:
+        if not raw_records:
             raise ValueError(f"No records found in CSV: {self.csv_path}")
 
-        # Build or use sorted class mapping
+        # Build or use sorted class mapping across raw records
         if class_to_idx is None:
-            unique_species = sorted({r["species_slug"] for r in self.records if r.get("species_slug")})
+            unique_species = sorted({r["species_slug"] for r in raw_records if r.get("species_slug")})
             self.class_to_idx = {slug: i for i, slug in enumerate(unique_species)}
         else:
             self.class_to_idx = class_to_idx
 
         self.idx_to_class = {i: s for s, i in self.class_to_idx.items()}
 
-    def __len__(self) -> int:
-        return len(self.records)
+        # Build fast image index from manifest_768.csv if present in image_dir
+        self.path_lookup: dict[str, Path] = {}
+        if self.image_dir and self.image_dir.exists():
+            manifest_file = self.image_dir / "manifest_768.csv"
+            if manifest_file.exists():
+                with open(manifest_file, encoding="utf-8") as mf:
+                    m_reader = csv.DictReader(mf)
+                    for m_row in m_reader:
+                        rel_path = m_row.get("path")
+                        if rel_path:
+                            full_p = self.image_dir / rel_path
+                            if full_p.exists():
+                                if m_row.get("image_url"):
+                                    self.path_lookup[m_row["image_url"]] = full_p
+                                if m_row.get("photo_id"):
+                                    self.path_lookup[m_row["photo_id"]] = full_p
+                                if m_row.get("source_url"):
+                                    self.path_lookup[m_row["source_url"]] = full_p
 
-    def _find_image_file(self, row: dict[str, str]) -> Path | None:
-        """Locate image file on local disk by photo_id or slug."""
+        # Resolve records and paths
+        self.records: list[dict[str, str]] = []
+        self.image_paths: list[Path | None] = []
+
+        for r in raw_records:
+            slug = r.get("species_slug")
+            if not slug or slug not in self.class_to_idx:
+                continue
+            img_p = self._resolve_path(r)
+            if img_p is not None or self.mock_if_missing:
+                self.records.append(r)
+                self.image_paths.append(img_p)
+
+        logger.info(
+            "Dataset %s: %d / %d records active on disk (mock=%s)",
+            self.csv_path.name,
+            len(self.records),
+            len(raw_records),
+            self.mock_if_missing,
+        )
+
+    def _resolve_path(self, row: dict[str, str]) -> Path | None:
+        url = row.get("image_url") or row.get("canonical_url")
+        pid = row.get("photo_id") or row.get("inat_photo_id") or row.get("mo_image_id")
+        src = row.get("source_url")
+
+        if url and url in self.path_lookup:
+            return self.path_lookup[url]
+        if pid and pid in self.path_lookup:
+            return self.path_lookup[pid]
+        if src and src in self.path_lookup:
+            return self.path_lookup[src]
+
         if not self.image_dir or not self.image_dir.exists():
             return None
 
-        # Look for filename directly
-        photo_id = row.get("photo_id", "")
+        # Fallback candidates directly under image_dir
         slug = row.get("species_slug", "")
         file_name = row.get("file_name", "")
-
         candidates = [
             self.image_dir / file_name if file_name else None,
-            self.image_dir / slug / f"{photo_id}.jpg" if photo_id and slug else None,
-            self.image_dir / f"{photo_id}.jpg" if photo_id else None,
+            self.image_dir / slug / f"{pid}.jpg" if pid and slug else None,
+            self.image_dir / f"{pid}.jpg" if pid else None,
+            self.image_dir / "images" / slug / f"{pid}.jpg" if pid and slug else None,
         ]
         for c in candidates:
             if c and c.exists():
                 return c
         return None
 
+    def __len__(self) -> int:
+        return len(self.records)
+
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         row = self.records[idx]
         slug = row["species_slug"]
         label = self.class_to_idx[slug]
+        img_path = self.image_paths[idx]
 
-        img_path = self._find_image_file(row)
-        if img_path and img_path.exists():
-            image = Image.open(img_path).convert("RGB")
+        if img_path is not None and img_path.exists():
+            with Image.open(img_path) as opened:
+                image = opened.convert("RGB")
         elif self.mock_if_missing:
-            # Synthetic image for testing/mocking when dataset is not yet downloaded
-            # Deterministic color pattern based on hash of photo_id
             h = int(hashlib.sha256(row.get("photo_id", str(idx)).encode()).hexdigest()[:6], 16)
             r, g, b = (h >> 16) & 255, (h >> 8) & 255, h & 255
             image = Image.new("RGB", (256, 256), color=(r, g, b))
         else:
-            raise FileNotFoundError(
-                f"Image for record {row.get('photo_id')} ({slug}) not found in {self.image_dir}."
-            )
+            raise FileNotFoundError(f"Image for record {row.get('photo_id')} ({slug}) not found.")
 
         if self.transform is not None:
             tensor = self.transform(image)
@@ -459,6 +504,13 @@ def train_pipeline(
     run_id = f"{model_name}_r{input_size}_{int(start_time)}"
     run_dir = Path(output_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    if image_dir is None:
+        local_768 = Path("/home/bubolka/hf-768/upload")
+        if local_768.exists():
+            image_dir = local_768
+        else:
+            image_dir = Path("data/png_cache") / str(input_size)
 
     # 1. Device and precision setup
     if device is None:
@@ -722,7 +774,12 @@ def main() -> None:
     parser.add_argument("--input-size", type=int, default=224, choices=[224, 256], help="Input image resolution")
     parser.add_argument("--train-csv", type=str, default="data/splits/train.csv", help="Path to train split CSV")
     parser.add_argument("--val-csv", type=str, default="data/splits/val.csv", help="Path to val split CSV")
-    parser.add_argument("--image-dir", type=str, default="data/png_cache/224", help="Local directory with cached images")
+    default_img_dir = (
+        "/home/bubolka/hf-768/upload"
+        if Path("/home/bubolka/hf-768/upload").exists()
+        else "data/png_cache/224"
+    )
+    parser.add_argument("--image-dir", type=str, default=default_img_dir, help="Local directory with cached images")
     parser.add_argument("--output-dir", type=str, default="artifacts/train_runs", help="Output directory for checkpoints")
     parser.add_argument("--warmup-epochs", type=int, default=3, help="Epochs with frozen backbone")
     parser.add_argument("--fine-tune-epochs", type=int, default=20, help="Epochs for full fine-tuning")
