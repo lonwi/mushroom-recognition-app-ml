@@ -85,6 +85,10 @@ class ModelEMA:
         for name, ema_p in self.module.named_parameters():
             if name in model_params:
                 ema_p.copy_(self.decay * ema_p + (1.0 - self.decay) * model_params[name].detach())
+        model_buffers = dict(model.named_buffers())
+        for name, ema_b in self.module.named_buffers():
+            if name in model_buffers:
+                ema_b.copy_(model_buffers[name].detach())
 
     def state_dict(self) -> dict[str, Any]:
         return self.module.state_dict()
