@@ -38,6 +38,7 @@ artifacts/**
 *.jpg
 *.jpeg
 *.png
+!fixtures/p1/**/*.png
 *.webp
 *.pt
 *.pth

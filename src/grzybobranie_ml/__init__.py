@@ -9,6 +9,7 @@ from grzybobranie_ml.license_policy import (
     is_ui_safe_license,
     normalize_license,
 )
+from grzybobranie_ml.preprocess import load_rgb, preprocess
 from grzybobranie_ml.recognition_math import (
     decide_single,
     energy,
@@ -32,7 +33,9 @@ __all__ = [
     "fuse",
     "is_allowed_license",
     "is_ui_safe_license",
+    "load_rgb",
     "normalize_license",
+    "preprocess",
     "resolve_split_salt",
     "resolve_temperatures",
     "softmax",
