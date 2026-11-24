@@ -497,7 +497,7 @@ def train_pipeline(
     min_lr: float = 1e-6,
     weight_decay: float = 1e-4,
     label_smoothing: float = 0.1,
-    num_workers: int = 4,
+    num_workers: int = 8,
     mock_dataset: bool = False,
     device: str | None = None,
     resume_checkpoint: str | Path | None = None,
@@ -549,20 +549,25 @@ def train_pipeline(
     )
     logger.info("Loaded val dataset: %d samples", len(val_ds))
 
+    loader_kwargs: dict[str, Any] = {
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "pin_memory": use_amp,
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+
     train_loader = DataLoader(
         train_ds,
-        batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        pin_memory=use_amp,
         drop_last=True,
+        **loader_kwargs,
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=use_amp,
+        **loader_kwargs,
     )
 
     # 3. Model & EMA
@@ -633,7 +638,7 @@ def train_pipeline(
             total_loss = 0.0
             n_batches = 0
 
-            for images, targets in train_loader:
+            for i, (images, targets) in enumerate(train_loader):
                 images = images.to(device_obj, non_blocking=True)
                 targets = targets.to(device_obj, non_blocking=True)
 
@@ -648,6 +653,9 @@ def train_pipeline(
 
                 total_loss += loss.item()
                 n_batches += 1
+
+                if (i + 1) % 100 == 0 or (i + 1) == len(train_loader):
+                    logger.info("Warmup epoch %d [%d/%d] | Loss: %.4f", epoch, i + 1, len(train_loader), loss.item())
 
             avg_train_loss = total_loss / max(1, n_batches)
             val_metrics = evaluate_model(
@@ -697,7 +705,7 @@ def train_pipeline(
         n_batches = 0
         current_lr = scheduler.get_last_lr()[0]
 
-        for images, targets in train_loader:
+        for i, (images, targets) in enumerate(train_loader):
             images = images.to(device_obj, non_blocking=True)
             targets = targets.to(device_obj, non_blocking=True)
 
@@ -712,6 +720,9 @@ def train_pipeline(
 
             total_loss += loss.item()
             n_batches += 1
+
+            if (i + 1) % 100 == 0 or (i + 1) == len(train_loader):
+                logger.info("Fine-tune epoch %d [%d/%d] | Loss: %.4f", epoch, i + 1, len(train_loader), loss.item())
 
         scheduler.step()
         avg_train_loss = total_loss / max(1, n_batches)
@@ -788,8 +799,11 @@ def main() -> None:
     parser.add_argument("--warmup-epochs", type=int, default=3, help="Epochs with frozen backbone")
     parser.add_argument("--fine-tune-epochs", type=int, default=20, help="Epochs for full fine-tuning")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
+    parser.add_argument("--num-workers", type=int, default=8, help="Number of DataLoader workers")
     parser.add_argument("--warmup-lr", type=float, default=1e-3, help="Head warmup learning rate")
     parser.add_argument("--fine-tune-lr", type=float, default=1e-4, help="Fine-tuning initial learning rate")
+    parser.add_argument("--min-lr", type=float, default=1e-6, help="Cosine annealing minimum learning rate")
+    parser.add_argument("--weight-decay", type=float, default=1e-4, help="AdamW weight decay")
     parser.add_argument("--mock-dataset", action="store_true", help="Use synthetic mock images if files missing")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
 
@@ -808,6 +822,9 @@ def main() -> None:
         batch_size=args.batch_size,
         warmup_lr=args.warmup_lr,
         fine_tune_lr=args.fine_tune_lr,
+        min_lr=args.min_lr,
+        weight_decay=args.weight_decay,
+        num_workers=args.num_workers,
         mock_dataset=args.mock_dataset,
         resume_checkpoint=args.resume,
     )
