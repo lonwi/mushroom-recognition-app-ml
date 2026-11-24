@@ -450,7 +450,8 @@ def evaluate_checkpoint_calibration(
     ood_nonfungi_csv: str | Path = DEFAULT_OOD_NONFUNGI_CSV,
     karty_path: str | Path = DEFAULT_KARTY_PATH,
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
-    min_top1_prob: float = 0.40,
+    min_top1_prob: float = 0.50,
+    energy_threshold_override: float | None = -2.2082,
     batch_size: int = 128,
     num_workers: int = 8,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
@@ -671,10 +672,11 @@ def evaluate_checkpoint_calibration(
         "ood_nonfungi": (ood_nonfungi_logits, ood_nonfungi_records),
     }
 
-    # Determine energy threshold at 95% keep rate on val
-    _auroc_calib, _fpr95_calib, energy_threshold = compute_auroc_and_fpr(
+    # Determine energy threshold (Recommendation B frozen: -2.2082, or compute at 95% keep rate if override is None)
+    _auroc_calib, _fpr95_calib, calib_threshold = compute_auroc_and_fpr(
         e_val, compute_energy_vector(ood_splits["ood_calib"][0], t_opt), target_id_tpr=0.95
     )
+    energy_threshold = energy_threshold_override if energy_threshold_override is not None else calib_threshold
 
     ood_metrics_report: dict[str, Any] = {}
     for split_name, (split_logits, split_records) in ood_splits.items():
@@ -995,7 +997,8 @@ def main() -> None:
     parser.add_argument("--ood-nonfungi-csv", type=str, default=str(DEFAULT_OOD_NONFUNGI_CSV), help="OOD nonfungi CSV")
     parser.add_argument("--karty-path", type=str, default=str(DEFAULT_KARTY_PATH), help="Path to karty_sobowtory.json")
     parser.add_argument("--output-dir", type=str, default=str(DEFAULT_OUTPUT_DIR), help="Output directory")
-    parser.add_argument("--min-top1-prob", type=float, default=0.40, help="Minimum top-1 probability threshold")
+    parser.add_argument("--min-top1-prob", type=float, default=0.50, help="Minimum top-1 probability threshold")
+    parser.add_argument("--energy-threshold", type=float, default=-2.2082, help="Override energy threshold theta (Recommendation B: -2.2082)")
     parser.add_argument("--batch-size", type=int, default=128, help="Batch size")
     parser.add_argument("--num-workers", type=int, default=8, help="Data loader workers")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device")
@@ -1014,6 +1017,7 @@ def main() -> None:
         karty_path=args.karty_path,
         output_dir=args.output_dir,
         min_top1_prob=args.min_top1_prob,
+        energy_threshold_override=args.energy_threshold,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         device=args.device,

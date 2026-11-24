@@ -131,9 +131,9 @@ def fuse_observation_frames(
     high_stakes_slugs: set[str] | list[str],
     temperature_frame: float = 0.7848,
     temperature_multi: float = 0.5146,
-    energy_threshold_frame: float = -1.8890,
+    energy_threshold_frame: float = -2.2082,
     energy_threshold_fused: float | None = None,
-    min_top1_prob: float = 0.55,
+    min_top1_prob: float = 0.50,
     disagreement_prob_threshold: float = 0.70,
     high_stakes_veto_threshold: float = 0.20,
     veto_check_all_frames: bool = True,
@@ -526,8 +526,8 @@ def evaluate_val_multi_photo(
     cached_logits_path: str | Path = DEFAULT_CACHED_LOGITS,
     karty_path: str | Path = DEFAULT_KARTY_PATH,
     output_dir: str | Path = DEFAULT_MULTI_PHOTO_OUTPUT_DIR,
-    energy_threshold_frame: float = -1.8890,
-    min_top1_prob: float = 0.55,
+    energy_threshold_frame: float = -2.2082,
+    min_top1_prob: float = 0.50,
     disagreement_prob_threshold: float = 0.70,
     high_stakes_veto_threshold: float = 0.20,
     veto_check_all_frames: bool = True,
@@ -895,8 +895,8 @@ def main() -> None:
     parser.add_argument("--cached-logits", type=str, default=str(DEFAULT_CACHED_LOGITS), help="Path to cached logits .pt file.")
     parser.add_argument("--karty-path", type=str, default=str(DEFAULT_KARTY_PATH), help="Path to karty_sobowtory.json.")
     parser.add_argument("--output-dir", type=str, default=str(DEFAULT_MULTI_PHOTO_OUTPUT_DIR), help="Output directory.")
-    parser.add_argument("--energy-threshold", type=float, default=-1.8890, help="Energy threshold theta.")
-    parser.add_argument("--min-top1-prob", type=float, default=0.55, help="Minimum top1 confidence.")
+    parser.add_argument("--energy-threshold", type=float, default=-2.2082, help="Energy threshold theta.")
+    parser.add_argument("--min-top1-prob", type=float, default=0.50, help="Minimum top1 confidence.")
     parser.add_argument("--disagreement-threshold", type=float, default=0.70, help="Disagreement confidence threshold.")
     parser.add_argument("--veto-threshold", type=float, default=0.20, help="High-stakes veto probability threshold.")
     parser.add_argument(
