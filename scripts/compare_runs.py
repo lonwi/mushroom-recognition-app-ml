@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -118,8 +119,6 @@ def main() -> None:
 
             # 256
             na256, nb256 = res256["per_class_total"][ia], res256["per_class_total"][ib]
-            cab256 = res224["confusion"][ia, ib]
-            cba256 = res224["confusion"][ib, ia]
             eab256 = res256["confusion"][ia, ib] / na256 if na256 > 0 else 0.0
             eba256 = res256["confusion"][ib, ia] / nb256 if nb256 > 0 else 0.0
             max256 = max(eab256, eba256)
