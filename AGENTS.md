@@ -1,6 +1,6 @@
 # AGENTS.md — Grzybobranie AI Machine Learning Repository
 
-This repository is the standalone ML pipeline for **Grzybobranie AI**. It is currently a **v0.1.0 skeleton/bootstrap**; most pipeline modules are not implemented yet. Any AI agent, bot, or human developer MUST read `README.md` first and follow these rules before running or modifying code.
+This repository is the standalone ML pipeline for **Grzybobranie AI** (Stages P0–P6 implemented). Any AI agent, bot, or human developer MUST read `README.md` first and follow these rules before running or modifying code.
 
 ## 1. Project rules
 
@@ -19,12 +19,14 @@ All modules belong in `src/grzybobranie_ml/`. The only supported invocation is:
 python -m grzybobranie_ml.<module>
 ```
 
-Planned modules (missing in v0.1.0): `local_drop`, `prepare_data`, `cache_manager`, `train`, `export_tflite`, `calibrate_ood`, `ship_gates`, `manifest`. Environment bootstrap is `python3 scripts/init_env.py`.
+Implemented modules: `license_policy`, `split`, `prepare_data`, `preprocess`, `recognition_math`, `train`, `calibrate_ood`, `multi_photo`, `export_tflite`, `quantization_drift`, `ship_gates`. Planned: `local_drop`, `cache_manager`, `manifest`. Environment bootstrap is `python3 scripts/init_env.py`.
 
 ## 3. Operating rules
 
 - Never invent metrics. Every reported number must trace to an artifact on disk (JSON/JSONL, log, or command output from this session).
 - Never commit secrets, tokens, credentials, or `split_salt`. The salt file stays outside git (default `~/.config/grzybobranie/split_salt`, overridable with `GRZYBOBRANIE_SPLIT_SALT_PATH`).
 - Do not start training, download datasets, or call unimplemented modules unless the user explicitly asked for that step.
-- Prefer extending the package layout over adding flat scripts at `src/*.py`.
+- Prefer extending `src/grzybobranie_ml/<module>.py` over adding flat standalone scripts (keep CLI entry points invocable via `python -m grzybobranie_ml.<module>`).
+- **Training & EMA invariants:** Any `ModelEMA` wrapper must synchronize both `named_parameters()` and `named_buffers()` (BatchNorm running stats). On local RTX 5070 + ext4, configure `DataLoader` with `num_workers=8`, `pin_memory=True`, `persistent_workers=True`, and `prefetch_factor=2` when `num_workers > 0`.
+- **Test split immutability:** Never use `data/splits/test.csv` or `ood_test` for temperature fitting, OOD threshold sweeps, representative INT8 calibration, or visual samples. Freeze all thresholds on `val.csv` and `ood_calib` before a single final `ship_gates` pass.
 - When acting as the training bot, read `docs/soul.md` and execute stages P0–P9 from `docs/prompty.md`. The manifest contract is `schemas/model-manifest.schema.json` (see also `docs/decisions/2026-11-16-schema-v1-clarifications.md`).
