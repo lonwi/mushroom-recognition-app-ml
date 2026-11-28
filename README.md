@@ -1,6 +1,6 @@
 # Grzybobranie AI — Standalone Machine Learning Pipeline
 
-This repository is the standalone Machine Learning (ML) pipeline for the **Grzybobranie AI** mobile application. When complete, it will cover dataset ingestion, local photo drop-in, leak-free train/val/test splitting, smart caching, `timm` + PyTorch training/fine-tuning, energy-based Out-of-Distribution (OOD) calibration, and LiteRT (`.tflite`) model export.
+This repository is the standalone Machine Learning (ML) pipeline for the **Grzybobranie AI** mobile application. When complete, it will cover dataset ingestion, local photo drop-in, leak-free train/val/test splitting, WebDataset shards, `timm` + PyTorch training/fine-tuning, energy-based Out-of-Distribution (OOD) calibration, and LiteRT (`.tflite`) model export.
 
 > **Status:** v0.1.0 — skeleton/bootstrap; pipeline under construction.
 
@@ -12,7 +12,7 @@ What exists today is the project rule set, packaging metadata (`pyproject.toml`)
    * The model classifies full images into $K$ mushroom species (the `mini+` baseline targets $K = 67$, configurable via planned `configs/pokrycie-*.csv`).
    * There are **no** `not_a_mushroom` or `unknown_mushroom` classes in the model head.
    * Non-mushrooms and unknown species are rejected using an **Energy OOD Gate**: $E(x) = -T \cdot \text{logsumexp}(\text{logits} / T)$ and `minTop1Prob`.
-   * Target species with insufficient training data are placed in `uncoveredSpecies` inside `model-manifest.json` (the app Atlas still displays them, while the scanner degrades gracefully). The thresholds are minimum training-image counts: $< 55$ for `high_stakes`/toxic species, $< 40$ for others. Do not add uncovered species to the head as `in_model: false`.
+   * Target species with insufficient training data are placed in `uncoveredSpecies` inside `model-manifest.json` (the app Atlas still displays them, while the scanner degrades gracefully). The thresholds are minimum image counts on the **whole set after filters**: $< 55$ for `high_stakes`/toxic species, $< 40$ for others (the training-split count is reported separately). Do not add uncovered species to the head as `in_model: false`.
 
 2. **Filesystem Requirement (Linux / WSL2 `ext4`):**
    * Clone and run this repository on a native Linux `ext4` filesystem (if using WSL2, clone inside the Linux home tree and **never on `/mnt/c`**, as DrvFS severely degrades I/O throughput during image caching and training).
@@ -23,7 +23,7 @@ What exists today is the project rule set, packaging metadata (`pyproject.toml`)
      * `HF_DATASET_REPO` — private Hugging Face dataset repository (training and OOD manifests).
      * `HF_MODEL_REPO` — private Hugging Face model repository (tagged releases of `.tflite` + `model-manifest.json`).
    * Optional: `HF_TOKEN` for authenticated access (never commit a real token).
-   * **Optional Local Image Seed:** If you have a local folder of previously downloaded images, a future `cache_manager` entry point will accept `--seed-dir /path/to/images` to avoid re-downloading existing files.
+   * **Optional Local Image Seed:** If you have a local folder of previously downloaded images, a future ingest entry point will accept `--seed-dir /path/to/images` to avoid re-downloading existing files.
 
 4. **Licensing & Safety Guardrails:**
    * **Training Photos:** Only `CC0`, `CC BY`, `CC BY-NC`, `CC BY-SA` (versioned), and `pd_self` are allowed.
@@ -63,11 +63,11 @@ What exists today is the project rule set, packaging metadata (`pyproject.toml`)
 ├── .agents/
 │   └── skills/                # Planned: local agent skills
 ├── data/                      # [GITIGNORED CONTENT] Working data (structure kept)
-│   ├── hf_raw/                # Planned: downloaded Hugging Face CSV manifests
+│   ├── hf_raw/                # Planned: downloaded Hugging Face manifests
 │   ├── ood-v1/                # Planned: OOD calibration/test set & ood_ids.txt
 │   ├── local_drop/            # Planned: staging folder for custom/local photo batches
 │   ├── splits/                # Planned: attributions.jsonl & splits.json
-│   └── png_cache/             # Planned: preprocessed 224x224 and 256x256 PNGs
+│   └── shards/                # Planned: WebDataset train/val/test shards
 └── artifacts/                 # [GITIGNORED CONTENT] Training outputs (structure kept)
     ├── checkpoints/           # Planned: best PyTorch checkpoints (.pth)
     ├── exports/               # Planned: exported .tflite models & model-manifest.json
@@ -125,7 +125,7 @@ All Python entry points use the package layout `python -m grzybobranie_ml.<modul
 | Stage | Status | Purpose |
 |---|---|---|
 | **P0** Environment bootstrap & inventory | **Partial** | Working directories, split salt, and GPU/filesystem checks exist (`scripts/init_env.py`). A written inventory, package modules, configs, and schemas are still planned. |
-| **P1** Data audit & leak-free split | **Planned** | Ingest HF manifests + optional `data/local_drop/`, enforce the license filter, drop OOD IDs, HMAC-salted connected-component split (70/15/15), PNG cache. |
+| **P1** Data audit & leak-free split | **Planned** | Ingest HF `manifest_768.parquet` + optional `data/local_drop/`, enforce the license filter, drop OOD IDs, HMAC-salted connected-component split (70/15/15). |
 | **P2** Architecture candidates | **Planned** | Select 2–3 `timm` backbones with allowed licenses, for input sizes 224 and 256. |
 | **P3** Training & fine-tuning | **Planned** | Frozen head, then full fine-tuning; checkpoints under `artifacts/checkpoints/`. |
 | **P4** Temperature scaling & ECE | **Planned** | Fit $T$ and report ECE on `.tflite` logits. |
@@ -144,7 +144,7 @@ python -m grzybobranie_ml.local_drop \
   --push-to-hf          # optional: uploads a validated batch to HF_DATASET_REPO
 
 python -m grzybobranie_ml.prepare_data --coverage-csv configs/pokrycie-67.csv
-python -m grzybobranie_ml.cache_manager --sizes 224 256 --workers 8
+python -m grzybobranie_ml.pack_shards
 
 python -m grzybobranie_ml.train \
   --model mobilenetv4_conv_small.e2400_r224_in1k \
