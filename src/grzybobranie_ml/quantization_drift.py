@@ -149,6 +149,7 @@ def verify_quantization_drift(
     temperature: float = TEMPERATURE_SINGLE,
     energy_threshold: float = ENERGY_THRESHOLD,
     min_top1_prob: float = MIN_TOP1_PROB,
+    crop_mode: str | None = None,
 ) -> dict[str, Any]:
     """Execute complete quantization drift verification on val.csv."""
     extracted_path = Path(calib_cache_path)
@@ -156,6 +157,13 @@ def verify_quantization_drift(
         raise FileNotFoundError(f"Calibration cache not found at: {extracted_path}")
 
     cache = torch.load(extracted_path, map_location="cpu", weights_only=False)
+    cached_crop_mode = str(cache.get("crop_mode", "legacy_448_center"))
+    if crop_mode is not None and crop_mode != cached_crop_mode:
+        raise ValueError(
+            f"Crop mode mismatch: requested {crop_mode!r}, but {extracted_path} was extracted with "
+            f"{cached_crop_mode!r}. Re-run calibrate_ood --force-extract --crop-mode {crop_mode} first."
+        )
+    effective_crop_mode = crop_mode or cached_crop_mode
 
     py_val_logits = cache["val_logits"].float().numpy()
     targets = np.array(cache["val_targets"], dtype=np.int64)
@@ -164,13 +172,13 @@ def verify_quantization_drift(
     high_stakes_species = load_high_stakes_species(karty_path)
     high_stakes_indices = {class_to_idx[s] for s in high_stakes_species if s in class_to_idx}
     high_stakes_mask = np.isin(targets, list(high_stakes_indices))
-    logger.info("Loaded PyTorch logits: %s, high-stakes samples: %d", py_val_logits.shape, np.sum(high_stakes_mask))
+    logger.info("Loaded PyTorch logits: %s (crop_mode=%s), high-stakes samples: %d", py_val_logits.shape, effective_crop_mode, np.sum(high_stakes_mask))
 
     # Dataset loader
     val_ds = MushroomSplitDataset(
         csv_path=val_csv,
         image_dir=image_dir,
-        transform=get_val_transforms(256),
+        transform=get_val_transforms(256, crop_mode=effective_crop_mode),
         class_to_idx=class_to_idx,
     )
     val_loader = DataLoader(val_ds, batch_size=128, shuffle=False, num_workers=8, pin_memory=False)
@@ -243,6 +251,7 @@ def verify_quantization_drift(
 
     report = {
         "val_samples_evaluated": len(val_ds),
+        "crop_mode": effective_crop_mode,
         "high_stakes_samples": int(np.sum(high_stakes_mask)),
         "frozen_thresholds": {
             "temperature_single": temperature,
@@ -324,6 +333,7 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=TEMPERATURE_SINGLE, help="Temperature single")
     parser.add_argument("--energy-threshold", type=float, default=ENERGY_THRESHOLD, help="Energy threshold theta")
     parser.add_argument("--min-top1-prob", type=float, default=MIN_TOP1_PROB, help="Minimum top1 prob")
+    parser.add_argument("--crop-mode", type=str, default=None, help="Validation preprocessing crop mode (defaults to cache crop_mode)")
 
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -339,6 +349,7 @@ def main() -> None:
         temperature=args.temperature,
         energy_threshold=args.energy_threshold,
         min_top1_prob=args.min_top1_prob,
+        crop_mode=args.crop_mode,
     )
 
 

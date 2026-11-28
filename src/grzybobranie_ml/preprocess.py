@@ -515,7 +515,36 @@ def preprocess(
     }
 
 
+def baseline_preprocessing(n: int) -> dict[str, Any]:
+    """Prototype / schema-example baseline for a square input of size N."""
+    return {
+        "inputSize": {"width": n, "height": n},
+        "exifOrientation": "apply",
+        "colorOrder": "RGB",
+        "decodeMinWidth": 448,
+        "resize": {
+            "steps": [
+                {
+                    "op": "to_width",
+                    "value": 448,
+                    "filter": "box",
+                    "antialias": True,
+                },
+                {"op": "to_size", "filter": "box", "antialias": True},
+            ]
+        },
+        "crop": "none_stretch",
+        "rounding": "half_up_uint8",
+        "normalization": {
+            "type": "scale_offset",
+            "scale": 1.0 / 127.5,
+            "offset": -1.0,
+        },
+    }
+
+
 __all__ = [
+    "baseline_preprocessing",
     "load_rgb",
     "preprocess",
     "resize_bilinear",

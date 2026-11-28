@@ -28,7 +28,7 @@ import numpy as np
 import scipy.optimize as opt
 import torch
 import torchvision.transforms as T
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 from scipy import stats
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
@@ -72,6 +72,7 @@ class OODManifestDataset(Dataset):
         image_dir: str | Path,
         transform: Any = None,
         path_lookup: dict[str, Path] | None = None,
+        split_filter: str | None = None,
     ) -> None:
         self.csv_path = Path(csv_path)
         self.image_dir = Path(image_dir)
@@ -100,6 +101,8 @@ class OODManifestDataset(Dataset):
 
         with open(self.csv_path, encoding="utf-8") as f:
             for row in csv.DictReader(f):
+                if split_filter and row.get("proposed_split") != split_filter:
+                    continue
                 pid = row.get("photo_id")
                 url = row.get("image_url")
                 src = row.get("source_url")
@@ -116,7 +119,8 @@ class OODManifestDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         p = self.image_paths[idx]
         with Image.open(p) as img:
-            image = img.convert("RGB")
+            oriented = ImageOps.exif_transpose(img)
+            image = (oriented if oriented is not None else img).convert("RGB")
         tensor = self.transform(image) if self.transform else T.ToTensor()(image)
         return tensor, idx
 
@@ -457,6 +461,8 @@ def evaluate_checkpoint_calibration(
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     cached_logits_path: str | Path | None = None,
     force_extract: bool = False,
+    crop_mode: str = "none_stretch",
+    calib_only: bool = False,
 ) -> dict[str, Any]:
     """Execute Stage P4: temperature calibration and OOD energy gate."""
     output_path = Path(output_dir)
@@ -473,12 +479,21 @@ def evaluate_checkpoint_calibration(
     if cache_file.exists() and not force_extract:
         cached = torch.load(cache_file, map_location="cpu", weights_only=False)
         cached_ckpt = cached.get("checkpoint_path")
+        cached_crop_mode = cached.get("crop_mode", "legacy_448_center")
         if cached_ckpt and Path(cached_ckpt).resolve() != ckpt_path.resolve():
             logger.warning(
                 "Cached logits in %s were generated for %s, but target is %s. Cache invalidated; extracting fresh logits.",
                 cache_file,
                 cached_ckpt,
                 ckpt_path,
+            )
+            use_cache = False
+        elif cached_crop_mode != crop_mode:
+            logger.warning(
+                "Cached logits in %s used crop_mode=%r, but target is %r. Cache invalidated; extracting fresh logits.",
+                cache_file,
+                cached_crop_mode,
+                crop_mode,
             )
             use_cache = False
         else:
@@ -513,11 +528,11 @@ def evaluate_checkpoint_calibration(
         class_to_idx_66 = {c: i for i, c in enumerate(active_classes)}
         idx_to_class_66 = {i: c for i, c in enumerate(active_classes)}
 
-        model = create_classifier_model(model_name, num_classes=67, pretrained=False).to(device_obj)
+        model = create_classifier_model(model_name, num_classes=len(class_to_idx_67), pretrained=False).to(device_obj)
         model.load_state_dict(ckpt.get("ema_state_dict", ckpt["model_state_dict"]))
         model.eval()
 
-        transform = get_val_transforms(input_size)
+        transform = get_val_transforms(input_size, crop_mode=crop_mode)
         val_ds = MushroomSplitDataset(val_csv, image_dir=image_dir, transform=transform, class_to_idx=class_to_idx_66)
         val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
@@ -525,10 +540,23 @@ def evaluate_checkpoint_calibration(
         verna_loader = DataLoader(verna_ds, batch_size=batch_size, shuffle=False, num_workers=2)
 
         shared_lookup = val_ds.path_lookup
-        ood_f_ds = OODManifestDataset(ood_fungi_csv, image_dir=image_dir, transform=transform, path_lookup=shared_lookup)
+        ood_split_filter = "calib" if calib_only else None
+        ood_f_ds = OODManifestDataset(
+            ood_fungi_csv,
+            image_dir=image_dir,
+            transform=transform,
+            path_lookup=shared_lookup,
+            split_filter=ood_split_filter,
+        )
         ood_f_loader = DataLoader(ood_f_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
-        ood_nf_ds = OODManifestDataset(ood_nonfungi_csv, image_dir=image_dir, transform=transform, path_lookup=shared_lookup)
+        ood_nf_ds = OODManifestDataset(
+            ood_nonfungi_csv,
+            image_dir=image_dir,
+            transform=transform,
+            path_lookup=shared_lookup,
+            split_filter=ood_split_filter,
+        )
         ood_nf_loader = DataLoader(ood_nf_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
         def run_extraction(loader: DataLoader) -> tuple[np.ndarray, list[int]]:
@@ -565,6 +593,8 @@ def evaluate_checkpoint_calibration(
             {
                 "checkpoint_path": str(ckpt_path),
                 "checkpoint_sha256": compute_file_sha256(ckpt_path) if ckpt_path.exists() else "",
+                "crop_mode": crop_mode,
+                "calib_only": calib_only,
                 "class_to_idx_66": class_to_idx_66,
                 "idx_to_class_66": idx_to_class_66,
                 "active_classes": active_classes,
@@ -653,24 +683,25 @@ def evaluate_checkpoint_calibration(
     is_calib_f = np.array([r.get("proposed_split") == "calib" for r in ood_fungi_records])
     is_calib_nf = np.array([r.get("proposed_split") == "calib" for r in ood_nonfungi_records])
 
-    ood_splits = {
+    ood_splits: dict[str, tuple[np.ndarray, list[dict[str, Any]]]] = {
         "ood_calib": (
             np.concatenate([ood_fungi_logits[is_calib_f], ood_nonfungi_logits[is_calib_nf]]),
             [r for r in ood_fungi_records if r.get("proposed_split") == "calib"]
             + [r for r in ood_nonfungi_records if r.get("proposed_split") == "calib"],
         ),
-        "ood_test": (
-            np.concatenate([ood_fungi_logits[~is_calib_f], ood_nonfungi_logits[~is_calib_nf]]),
-            [r for r in ood_fungi_records if r.get("proposed_split") == "test"]
-            + [r for r in ood_nonfungi_records if r.get("proposed_split") == "test"],
-        ),
-        "ood_total": (
-            np.concatenate([ood_fungi_logits, ood_nonfungi_logits]),
-            ood_fungi_records + ood_nonfungi_records,
-        ),
         "ood_fungi": (ood_fungi_logits, ood_fungi_records),
         "ood_nonfungi": (ood_nonfungi_logits, ood_nonfungi_records),
     }
+    if not calib_only:
+        ood_splits["ood_test"] = (
+            np.concatenate([ood_fungi_logits[~is_calib_f], ood_nonfungi_logits[~is_calib_nf]]),
+            [r for r in ood_fungi_records if r.get("proposed_split") == "test"]
+            + [r for r in ood_nonfungi_records if r.get("proposed_split") == "test"],
+        )
+        ood_splits["ood_total"] = (
+            np.concatenate([ood_fungi_logits, ood_nonfungi_logits]),
+            ood_fungi_records + ood_nonfungi_records,
+        )
 
     # Determine energy threshold (Recommendation B frozen: -2.2082, or compute at 95% keep rate if override is None)
     _auroc_calib, _fpr95_calib, calib_threshold = compute_auroc_and_fpr(
@@ -966,7 +997,9 @@ def evaluate_checkpoint_calibration(
             "val_confident_toxic_as_edible_count": int(val_conf_toxic_as_edible),
             "val_confident_toxic_as_edible_rate": float(val_conf_toxic_as_edible / len(val_targets)),
             "uncovered_verna_confident_edible_count": int(verna_conf_edible),
-            "ood_confident_edible_count": ood_metrics_report["ood_total"]["confident_edible_count"],
+            "ood_confident_edible_count": ood_metrics_report["ood_calib"]["confident_edible_count"]
+            if calib_only
+            else ood_metrics_report["ood_total"]["confident_edible_count"],
         },
         "dangerous_pairs_summary": {
             "total_evaluated": len(active_pairs),
@@ -998,15 +1031,18 @@ def main() -> None:
     parser.add_argument("--karty-path", type=str, default=str(DEFAULT_KARTY_PATH), help="Path to karty_sobowtory.json")
     parser.add_argument("--output-dir", type=str, default=str(DEFAULT_OUTPUT_DIR), help="Output directory")
     parser.add_argument("--min-top1-prob", type=float, default=0.50, help="Minimum top-1 probability threshold")
-    parser.add_argument("--energy-threshold", type=float, default=-2.2082, help="Override energy threshold theta (Recommendation B: -2.2082)")
+    parser.add_argument("--energy-threshold", type=str, default="-2.2082", help="Override energy threshold theta, or 'auto' for 95%% val TPR")
     parser.add_argument("--batch-size", type=int, default=128, help="Batch size")
     parser.add_argument("--num-workers", type=int, default=8, help="Data loader workers")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device")
     parser.add_argument("--cached-logits", type=str, default="artifacts/calibration/extracted_logits.pt", help="Path to cached logits")
     parser.add_argument("--force-extract", action="store_true", help="Force re-extraction of logits from checkpoint")
+    parser.add_argument("--crop-mode", type=str, default="none_stretch", help="Validation preprocessing crop mode")
+    parser.add_argument("--calib-only", action="store_true", help="Restrict OOD extraction and evaluation strictly to proposed_split=='calib'")
 
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    e_override = None if args.energy_threshold.strip().lower() in {"auto", "none"} else float(args.energy_threshold)
 
     evaluate_checkpoint_calibration(
         checkpoint_path=args.checkpoint,
@@ -1017,12 +1053,14 @@ def main() -> None:
         karty_path=args.karty_path,
         output_dir=args.output_dir,
         min_top1_prob=args.min_top1_prob,
-        energy_threshold_override=args.energy_threshold,
+        energy_threshold_override=e_override,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         device=args.device,
         cached_logits_path=args.cached_logits,
         force_extract=args.force_extract,
+        crop_mode=args.crop_mode,
+        calib_only=args.calib_only,
     )
 
 

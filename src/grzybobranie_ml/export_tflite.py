@@ -86,6 +86,21 @@ def inspect_tflite_operators(model_path: str | Path) -> list[str]:
     return sorted(op_names)
 
 
+def _disable_fused_attention(model: nn.Module) -> int:
+    """Disable PyTorch SDPA fast-path (`fused_attn`) for accurate LiteRT lowering."""
+    disabled = 0
+    for mod in model.modules():
+        if getattr(mod, "fused_attn", False):
+            mod.fused_attn = False
+            disabled += 1
+    if disabled > 0:
+        logger.info(
+            "Disabled fused_attn on %d attention modules to preserve LiteRT parity.",
+            disabled,
+        )
+    return disabled
+
+
 def load_and_prepare_model(
     checkpoint_path: str | Path = DEFAULT_CHECKPOINT,
     exclude_verna: bool = True,
@@ -108,7 +123,6 @@ def load_and_prepare_model(
 
     if exclude_verna and "amanita_verna" in class_to_idx:
         verna_idx = class_to_idx["amanita_verna"]
-        assert verna_idx == 12, f"Expected amanita_verna at index 12, found {verna_idx}"
         orig_w = model.classifier.weight.data
         orig_b = model.classifier.bias.data
 
@@ -138,6 +152,7 @@ def load_and_prepare_model(
         active_idx_to_class = {v: k for k, v in class_to_idx.items()}
 
     wrapped_model = NHWCWrapper(model).eval()
+    _disable_fused_attention(wrapped_model)
 
     meta = {
         "model_name": model_name,
@@ -158,6 +173,7 @@ def export_fp32(
     """Export wrapped PyTorch model to standard FP32 TFLite via litert_torch."""
     out_p = Path(output_path)
     out_p.parent.mkdir(parents=True, exist_ok=True)
+    _disable_fused_attention(wrapped_model)
 
     dummy_nhwc = torch.randn(1, input_size, input_size, 3, dtype=torch.float32)
     logger.info("Converting PyTorch model to FP32 TFLite at %s...", out_p)
@@ -210,6 +226,7 @@ def quantize_int8(
     output_path: str | Path = DEFAULT_OUTPUT_DIR / "mobilenetv4_medium_r256_int8.tflite",
     num_calib_samples: int = 200,
     input_size: int = 256,
+    crop_mode: str = "none_stretch",
 ) -> Path:
     """Quantize FP32 TFLite model to full INT8 static quantization using training samples strictly."""
     in_p = Path(fp32_tflite_path)
@@ -221,7 +238,7 @@ def quantize_int8(
         num_calib_samples,
         train_csv,
     )
-    val_transform = get_val_transforms(input_size)
+    val_transform = get_val_transforms(input_size, crop_mode=crop_mode)
     train_ds = MushroomSplitDataset(
         csv_path=train_csv,
         image_dir=image_dir,
@@ -311,6 +328,13 @@ class TFLiteRunner:
         return np.stack(results, axis=0)
 
 
+def _default_model_prefix(model_name: str, input_size: int) -> str:
+    if model_name == "mobilenetv4_conv_medium.e500_r256_in1k" and input_size == 256:
+        return "mobilenetv4_medium_r256"
+    base = model_name.split(".")[0].replace("/", "_")
+    return f"{base}_r{input_size}"
+
+
 def export_all_models(
     checkpoint_path: str | Path = DEFAULT_CHECKPOINT,
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
@@ -318,6 +342,8 @@ def export_all_models(
     image_dir: str | Path = DEFAULT_IMAGE_DIR,
     quant_dir: str | Path = DEFAULT_QUANT_DIR,
     num_calib_samples: int = 200,
+    model_prefix: str | None = None,
+    crop_mode: str = "none_stretch",
 ) -> dict[str, Any]:
     """Execute complete Stage P6 export of FP32, FP16, and INT8 models."""
     out_dir = Path(output_dir)
@@ -327,10 +353,11 @@ def export_all_models(
 
     wrapped_model, meta = load_and_prepare_model(checkpoint_path, exclude_verna=True)
     input_size = meta["input_size"]
+    prefix = model_prefix or _default_model_prefix(meta["model_name"], input_size)
 
-    fp32_path = out_dir / "mobilenetv4_medium_r256_fp32.tflite"
-    fp16_path = out_dir / "mobilenetv4_medium_r256_fp16.tflite"
-    int8_path = out_dir / "mobilenetv4_medium_r256_int8.tflite"
+    fp32_path = out_dir / f"{prefix}_fp32.tflite"
+    fp16_path = out_dir / f"{prefix}_fp16.tflite"
+    int8_path = out_dir / f"{prefix}_int8.tflite"
 
     # 1. FP32
     export_fp32(wrapped_model, input_size=input_size, output_path=fp32_path)
@@ -344,6 +371,7 @@ def export_all_models(
         output_path=int8_path,
         num_calib_samples=num_calib_samples,
         input_size=input_size,
+        crop_mode=crop_mode,
     )
 
     models_info = {}
@@ -396,6 +424,8 @@ def main() -> None:
     parser.add_argument("--image-dir", type=str, default=str(DEFAULT_IMAGE_DIR), help="Image directory")
     parser.add_argument("--quant-dir", type=str, default=str(DEFAULT_QUANT_DIR), help="Quantization artifacts directory")
     parser.add_argument("--num-calib", type=int, default=200, help="Number of samples for INT8 calibration")
+    parser.add_argument("--model-prefix", type=str, default=None, help="Output TFLite filename prefix")
+    parser.add_argument("--crop-mode", type=str, default="none_stretch", help="Preprocessing crop mode for INT8 calib/drift")
     parser.add_argument("--verify-drift", action="store_true", help="Run quantization drift verification on val.csv after export")
 
     args = parser.parse_args()
@@ -408,6 +438,8 @@ def main() -> None:
         image_dir=args.image_dir,
         quant_dir=args.quant_dir,
         num_calib_samples=args.num_calib,
+        model_prefix=args.model_prefix,
+        crop_mode=args.crop_mode,
     )
 
     if args.verify_drift:
@@ -420,6 +452,7 @@ def main() -> None:
             int8_model_path=int8_p,
             image_dir=args.image_dir,
             output_path=Path(args.quant_dir) / "quantization_drift_val.json",
+            crop_mode=args.crop_mode,
         )
 
 

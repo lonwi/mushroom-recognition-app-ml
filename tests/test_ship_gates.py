@@ -147,6 +147,10 @@ def test_evaluate_ood_test_audit() -> None:
     assert res["accepted_count"] == 0
     assert res["confident_edible_count"] == 0
     assert res["confident_edible_rate"] == 0.0
+    assert res["fungi_test"]["n_samples"] == 1290
+    assert res["nonfungi_test"]["n_samples"] == 940
+    assert res["fungi_test"]["confident_edible_count"] == 0
+    assert res["nonfungi_test"]["confident_edible_count"] == 0
 
 
 def test_render_ship_gates_markdown() -> None:

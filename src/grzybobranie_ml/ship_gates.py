@@ -23,6 +23,7 @@ import json
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ from scipy import stats
 from torch.utils.data import DataLoader
 
 from grzybobranie_ml.calibrate_ood import (
+    OODManifestDataset,
     compute_ece_mce,
     compute_energy_vector,
     compute_softmax,
@@ -73,6 +75,8 @@ FROZEN_ENERGY_THRESHOLD = -2.2082
 FROZEN_MIN_TOP1_PROB = 0.50
 FROZEN_DISAGREEMENT_THRESHOLD = 0.70
 FROZEN_HIGH_STAKES_VETO_THRESHOLD = 0.20
+FROZEN_TWIN_PAIR_VETO_THRESHOLD = 0.10
+FROZEN_TWIN_PAIR_MIN_RATIO = 5.0
 
 
 def compute_wilson_ci(k: int, n: int, confidence: float = 0.95) -> tuple[float, float]:
@@ -385,40 +389,66 @@ def evaluate_ood_test_audit(
         if (len(f_logits) > 0 or len(nf_logits) > 0)
         else np.zeros((0, 66), dtype=np.float32)
     )
-    n_ood = len(ood_logits)
+    def _summarize_ood_subset(sub_logits: np.ndarray) -> dict[str, Any]:
+        n_sub = len(sub_logits)
+        if n_sub == 0:
+            return {
+                "n_samples": 0,
+                "energy_rejection_count": 0,
+                "energy_rejection_rate": 0.0,
+                "unclear_rejection_count": 0,
+                "unclear_rejection_rate": 0.0,
+                "accepted_count": 0,
+                "accepted_rate": 0.0,
+                "confident_edible_count": 0,
+                "confident_edible_rate": 0.0,
+                "confident_edible_rate_pct": 0.0,
+                "wilson_ci_95": [0.0, 0.0],
+                "wilson_upper_bound_95": 0.0,
+            }
 
-    e = compute_energy_vector(ood_logits, temperature)
-    probs = compute_softmax(ood_logits, temperature)
-    p = np.max(probs, axis=1)
-    preds = np.argmax(ood_logits, axis=1)
+        e = compute_energy_vector(sub_logits, temperature)
+        probs = compute_softmax(sub_logits, temperature)
+        p = np.max(probs, axis=1)
+        preds = np.argmax(sub_logits, axis=1)
 
-    is_ood = e > energy_threshold
-    is_unclear = (~is_ood) & (p < min_top1_prob)
-    is_accepted = (~is_ood) & (~is_unclear)
+        is_ood = e > energy_threshold
+        is_unclear = (~is_ood) & (p < min_top1_prob)
+        is_accepted = (~is_ood) & (~is_unclear)
 
-    edible_pred_mask = np.array([idx_to_class[pr] in edible_slugs for pr in preds])
-    conf_edible_mask = is_accepted & edible_pred_mask
-    conf_edible_count = int(np.sum(conf_edible_mask))
-    conf_edible_rate = float(conf_edible_count / n_ood)
+        edible_pred_mask = np.array([idx_to_class[int(pr)] in edible_slugs for pr in preds])
+        conf_edible_count = int(np.sum(is_accepted & edible_pred_mask))
+        conf_edible_rate = float(conf_edible_count / n_sub)
+        wilson_low, wilson_high = compute_wilson_ci(conf_edible_count, n_sub)
+        return {
+            "n_samples": n_sub,
+            "energy_rejection_count": int(np.sum(is_ood)),
+            "energy_rejection_rate": float(np.mean(is_ood)),
+            "unclear_rejection_count": int(np.sum(is_unclear)),
+            "unclear_rejection_rate": float(np.mean(is_unclear)),
+            "accepted_count": int(np.sum(is_accepted)),
+            "accepted_rate": float(np.mean(is_accepted)),
+            "confident_edible_count": conf_edible_count,
+            "confident_edible_rate": conf_edible_rate,
+            "confident_edible_rate_pct": round(conf_edible_rate * 100.0, 2),
+            "wilson_ci_95": [wilson_low, wilson_high],
+            "wilson_upper_bound_95": wilson_high,
+        }
 
-    wilson_low, wilson_high = compute_wilson_ci(conf_edible_count, n_ood)
+    total_summary = _summarize_ood_subset(ood_logits)
+    fungi_summary = _summarize_ood_subset(f_logits)
+    nonfungi_summary = _summarize_ood_subset(nf_logits)
 
     return {
-        "n_samples": n_ood,
+        **total_summary,
         "n_fungi_test": len(f_logits),
         "n_nonfungi_test": len(nf_logits),
-        "energy_rejection_count": int(np.sum(is_ood)),
-        "energy_rejection_rate": float(np.mean(is_ood)),
-        "unclear_rejection_count": int(np.sum(is_unclear)),
-        "unclear_rejection_rate": float(np.mean(is_unclear)),
-        "accepted_count": int(np.sum(is_accepted)),
-        "accepted_rate": float(np.mean(is_accepted)),
-        "confident_edible_count": conf_edible_count,
-        "confident_edible_rate": conf_edible_rate,
-        "confident_edible_rate_pct": round(conf_edible_rate * 100.0, 2),
-        "wilson_ci_95": [wilson_low, wilson_high],
-        "wilson_upper_bound_95": wilson_high,
-        "passed": bool(conf_edible_rate <= 0.02 and wilson_high <= 0.05),
+        "fungi_test": fungi_summary,
+        "nonfungi_test": nonfungi_summary,
+        "passed": bool(
+            total_summary["confident_edible_rate"] <= 0.02
+            and total_summary["wilson_upper_bound_95"] <= 0.05
+        ),
     }
 
 
@@ -468,6 +498,9 @@ def evaluate_multi_photo_audit(
     min_top1_prob: float = FROZEN_MIN_TOP1_PROB,
     disagreement_threshold: float = FROZEN_DISAGREEMENT_THRESHOLD,
     veto_threshold: float = FROZEN_HIGH_STAKES_VETO_THRESHOLD,
+    dangerous_pairs: Sequence[tuple[str, str]] | None = None,
+    twin_pair_veto_threshold: float = FROZEN_TWIN_PAIR_VETO_THRESHOLD,
+    twin_pair_min_ratio: float = FROZEN_TWIN_PAIR_MIN_RATIO,
 ) -> dict[str, Any]:
     """Evaluate multi-frame observation prediction fusion on test.csv."""
     obs_map: dict[str, list[int]] = defaultdict(list)
@@ -520,6 +553,9 @@ def evaluate_multi_photo_audit(
             disagreement_prob_threshold=disagreement_threshold,
             high_stakes_veto_threshold=veto_threshold,
             veto_check_all_frames=True,
+            dangerous_pairs=dangerous_pairs,
+            twin_pair_veto_threshold=twin_pair_veto_threshold,
+            twin_pair_min_ratio=twin_pair_min_ratio,
         )
 
         if res.status == "CONFLICT_DETECTED":
@@ -550,6 +586,51 @@ def evaluate_multi_photo_audit(
     cond_acc = float(correct_count / accepted_count) if accepted_count > 0 else 0.0
     eff_acc = float(correct_count / n_multi) if n_multi > 0 else 0.0
 
+    # System-wide observation-level P5 audit (single + multi combined)
+    all_obs_accepted = 0
+    all_obs_correct = 0
+    all_obs_toxic_as_edible = 0
+    all_obs_veto = 0
+    all_obs_conflict = 0
+    for oid, frame_indices in obs_map.items():
+        if oid in multi_obs:
+            # Find already-evaluated multi-photo observation status/prediction without recomputing
+            sub_res = next(r for r in fused_results if r["observation_id"] == oid)
+            res_status = str(sub_res["status"])
+            pred_slug = sub_res["predicted_slug"]
+        else:
+            single_res = fuse_observation_frames(
+                logits=logits[frame_indices],
+                class_to_idx=class_to_idx,
+                idx_to_class=idx_to_class,
+                edible_slugs=edible_slugs,
+                high_stakes_slugs=high_stakes_slugs,
+                temperature_frame=temperature_frame,
+                temperature_multi=temperature_multi,
+                energy_threshold_frame=energy_threshold_frame,
+                energy_threshold_fused=energy_threshold_frame,
+                min_top1_prob=min_top1_prob,
+                disagreement_prob_threshold=disagreement_threshold,
+                high_stakes_veto_threshold=veto_threshold,
+                veto_check_all_frames=True,
+                dangerous_pairs=dangerous_pairs,
+                twin_pair_veto_threshold=twin_pair_veto_threshold,
+                twin_pair_min_ratio=twin_pair_min_ratio,
+            )
+            res_status = single_res.status
+            pred_slug = single_res.predicted_slug
+        gt = records[frame_indices[0]]["species_slug"]
+        if res_status == "HIGH_STAKES_VETO":
+            all_obs_veto += 1
+        elif res_status == "CONFLICT_DETECTED":
+            all_obs_conflict += 1
+        elif res_status == "OK":
+            all_obs_accepted += 1
+            if pred_slug == gt:
+                all_obs_correct += 1
+            if gt in toxic_slugs and pred_slug in edible_slugs:
+                all_obs_toxic_as_edible += 1
+
     return {
         "n_multi_observations": n_multi,
         "n_multi_frames_total": sum(len(v) for v in multi_obs.values()),
@@ -562,6 +643,15 @@ def evaluate_multi_photo_audit(
         "high_stakes_veto_count": veto_triggered_count,
         "all_frames_ood_count": all_ood_count,
         "fused_toxic_as_edible_count": fused_toxic_as_edible,
+        "all_observations_summary": {
+            "total_observations": len(obs_map),
+            "accepted_count": all_obs_accepted,
+            "keep_rate": float(all_obs_accepted / len(obs_map)) if obs_map else 0.0,
+            "conditional_accuracy": float(all_obs_correct / all_obs_accepted) if all_obs_accepted > 0 else 0.0,
+            "high_stakes_veto_count": all_obs_veto,
+            "conflict_detected_count": all_obs_conflict,
+            "confident_toxic_as_edible_count": all_obs_toxic_as_edible,
+        },
         "passed": bool(fused_toxic_as_edible == 0 and cond_acc >= 0.85),
     }
 
@@ -576,6 +666,16 @@ def run_final_ship_gates_audit(
     karty_path: str | Path = DEFAULT_KARTY_PATH,
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     device_str: str = "cuda" if torch.cuda.is_available() else "cpu",
+    crop_mode: str = "none_stretch",
+    calib_cache_path: str | Path = "artifacts/calibration/extracted_logits.pt",
+    temperature_single: float = FROZEN_TEMPERATURE_SINGLE,
+    temperature_multi: float = FROZEN_TEMPERATURE_MULTI,
+    energy_threshold: float = FROZEN_ENERGY_THRESHOLD,
+    min_top1_prob: float = FROZEN_MIN_TOP1_PROB,
+    disagreement_threshold: float = FROZEN_DISAGREEMENT_THRESHOLD,
+    high_stakes_veto_threshold: float = FROZEN_HIGH_STAKES_VETO_THRESHOLD,
+    twin_pair_veto_threshold: float = FROZEN_TWIN_PAIR_VETO_THRESHOLD,
+    twin_pair_min_ratio: float = FROZEN_TWIN_PAIR_MIN_RATIO,
 ) -> dict[str, Any]:
     """Execute complete Stage P6/P8 final Ship Gates audit."""
     out_dir = Path(output_dir)
@@ -596,12 +696,13 @@ def run_final_ship_gates_audit(
     # Unwrap for standard NCHW batch loader
     pt_model = wrapped_model.model.to(device).eval()
     tflite_runner = TFLiteRunner(tflite_path, num_threads=8)
+    val_transform = get_val_transforms(input_size, crop_mode=crop_mode)
 
     # 3. Load test.csv dataset (active 66 classes)
     test_ds = MushroomSplitDataset(
         csv_path=test_csv,
         image_dir=image_dir,
-        transform=get_val_transforms(input_size),
+        transform=val_transform,
         class_to_idx=class_to_idx,
         mock_if_missing=False,
     )
@@ -624,34 +725,76 @@ def run_final_ship_gates_audit(
         toxic_slugs=toxic_slugs,
         high_stakes_slugs=high_stakes_slugs,
         dangerous_pairs=dangerous_pairs,
+        temperature=temperature_single,
+        energy_threshold=energy_threshold,
+        min_top1_prob=min_top1_prob,
     )
 
-    # 6. Amanita verna test samples (uncovered deadly species)
+    # 6. Amanita verna test samples (uncovered deadly species, evaluated with production TFLite)
     verna_ds = MushroomSplitDataset(
         csv_path=test_csv,
         image_dir=image_dir,
-        transform=get_val_transforms(input_size),
+        transform=val_transform,
         class_to_idx={"amanita_verna": 0},
         mock_if_missing=False,
     )
     verna_loader = DataLoader(verna_ds, batch_size=64, shuffle=False, num_workers=4)
-    verna_py_logits = extract_pytorch_test_logits(pt_model, verna_loader, device)
+    verna_tf_logits = extract_tflite_test_logits(tflite_runner, verna_loader)
     verna_audit = evaluate_uncovered_species_verna(
-        verna_logits=verna_py_logits,
+        verna_logits=verna_tf_logits,
         idx_to_class=idx_to_class,
         edible_slugs=edible_slugs,
+        temperature=temperature_single,
+        energy_threshold=energy_threshold,
+        min_top1_prob=min_top1_prob,
     )
 
-    # 7. OOD Test Audit (2,230 images)
-    # Using the cached OOD logits from Stage P4 (which were precomputed on the exact same checkpoint)
-    extracted_calib_cache = torch.load("artifacts/calibration/extracted_logits.pt", map_location="cpu", weights_only=False)
+    # 7. OOD Test Audit (2,230 images; never reuse calib_only cache)
+    cache_p = Path(calib_cache_path)
+    use_cached_ood = False
+    cached_ood: dict[str, Any] = {}
+    if cache_p.exists():
+        cached_ood = torch.load(cache_p, map_location="cpu", weights_only=False)
+        has_test_f = any(r.get("proposed_split") == "test" for r in cached_ood.get("ood_fungi_records", []))
+        has_test_nf = any(r.get("proposed_split") == "test" for r in cached_ood.get("ood_nonfungi_records", []))
+        if (
+            not cached_ood.get("calib_only", False)
+            and has_test_f
+            and has_test_nf
+            and cached_ood.get("checkpoint_sha256") == meta["checkpoint_sha256"]
+            and cached_ood.get("crop_mode", "legacy_448_center") == crop_mode
+        ):
+            use_cached_ood = True
+
+    if use_cached_ood:
+        ood_f_logits = cached_ood["ood_fungi_logits"].float().numpy()
+        ood_f_records = cached_ood["ood_fungi_records"]
+        ood_nf_logits = cached_ood["ood_nonfungi_logits"].float().numpy()
+        ood_nf_records = cached_ood["ood_nonfungi_records"]
+    else:
+        ood_f_ds = OODManifestDataset(
+            ood_fungi_csv, image_dir=image_dir, transform=val_transform, path_lookup=test_ds.path_lookup
+        )
+        ood_nf_ds = OODManifestDataset(
+            ood_nonfungi_csv, image_dir=image_dir, transform=val_transform, path_lookup=test_ds.path_lookup
+        )
+        ood_f_loader = DataLoader(ood_f_ds, batch_size=128, shuffle=False, num_workers=8, pin_memory=device.type == "cuda")
+        ood_nf_loader = DataLoader(ood_nf_ds, batch_size=128, shuffle=False, num_workers=8, pin_memory=device.type == "cuda")
+        ood_f_logits = extract_tflite_test_logits(tflite_runner, ood_f_loader)
+        ood_f_records = ood_f_ds.records
+        ood_nf_logits = extract_tflite_test_logits(tflite_runner, ood_nf_loader)
+        ood_nf_records = ood_nf_ds.records
+
     ood_audit = evaluate_ood_test_audit(
-        ood_fungi_logits=extracted_calib_cache["ood_fungi_logits"].float().numpy(),
-        ood_fungi_records=extracted_calib_cache["ood_fungi_records"],
-        ood_nonfungi_logits=extracted_calib_cache["ood_nonfungi_logits"].float().numpy(),
-        ood_nonfungi_records=extracted_calib_cache["ood_nonfungi_records"],
+        ood_fungi_logits=ood_f_logits,
+        ood_fungi_records=ood_f_records,
+        ood_nonfungi_logits=ood_nf_logits,
+        ood_nonfungi_records=ood_nf_records,
         idx_to_class=idx_to_class,
         edible_slugs=edible_slugs,
+        temperature=temperature_single,
+        energy_threshold=energy_threshold,
+        min_top1_prob=min_top1_prob,
     )
 
     # 8. Multi-Photo Pipeline Audit (P5) on test.csv
@@ -663,6 +806,15 @@ def run_final_ship_gates_audit(
         edible_slugs=edible_slugs,
         toxic_slugs=toxic_slugs,
         high_stakes_slugs=high_stakes_slugs,
+        temperature_frame=temperature_single,
+        temperature_multi=temperature_multi,
+        energy_threshold_frame=energy_threshold,
+        min_top1_prob=min_top1_prob,
+        disagreement_threshold=disagreement_threshold,
+        veto_threshold=high_stakes_veto_threshold,
+        dangerous_pairs=dangerous_pairs,
+        twin_pair_veto_threshold=twin_pair_veto_threshold,
+        twin_pair_min_ratio=twin_pair_min_ratio,
     )
 
     # 9. Gate evaluation synthesis
@@ -728,12 +880,15 @@ def run_final_ship_gates_audit(
         "tflite_sha256": compute_file_sha256(tflite_path),
         "overall_ship_gates_pass": overall_pass,
         "frozen_configuration": {
-            "temperature_single": FROZEN_TEMPERATURE_SINGLE,
-            "temperature_multi": FROZEN_TEMPERATURE_MULTI,
-            "energy_threshold_theta": FROZEN_ENERGY_THRESHOLD,
-            "min_top1_prob": FROZEN_MIN_TOP1_PROB,
-            "disagreement_threshold": FROZEN_DISAGREEMENT_THRESHOLD,
-            "high_stakes_veto_threshold": FROZEN_HIGH_STAKES_VETO_THRESHOLD,
+            "crop_mode": crop_mode,
+            "temperature_single": temperature_single,
+            "temperature_multi": temperature_multi,
+            "energy_threshold_theta": energy_threshold,
+            "min_top1_prob": min_top1_prob,
+            "disagreement_threshold": disagreement_threshold,
+            "high_stakes_veto_threshold": high_stakes_veto_threshold,
+            "twin_pair_veto_threshold": twin_pair_veto_threshold,
+            "twin_pair_min_ratio": twin_pair_min_ratio,
         },
         "gates_summary_table": summary_table,
         "single_frame_audit": single_audit,
@@ -758,6 +913,11 @@ def run_final_ship_gates_audit(
 
 def render_ship_gates_markdown(report: dict[str, Any]) -> str:
     """Generate Markdown report for Ship Gates audit."""
+    cfg = report.get("frozen_configuration", {})
+    t_single = cfg.get("temperature_single", FROZEN_TEMPERATURE_SINGLE)
+    theta = cfg.get("energy_threshold_theta", FROZEN_ENERGY_THRESHOLD)
+    min_p = cfg.get("min_top1_prob", FROZEN_MIN_TOP1_PROB)
+
     lines = [
         "# Finalny Audyt Ship Gates — Etap P6 / P8",
         "",
@@ -784,8 +944,8 @@ def render_ship_gates_markdown(report: dict[str, Any]) -> str:
         f"- **Dokładność Top-1 (Raw PyTorch vs TFLite FP16)**: {single['accuracy_raw_pytorch']*100:.2f}% vs {single['accuracy_raw_tflite']*100:.2f}%",
         f"- **Zgodność TFLite FP16 vs PyTorch (`tfliteAgreement`)**: **{single['tflite_agreement_overall']*100:.2f}%** (Wysokie ryzyko: **{single['tflite_agreement_high_stakes']*100:.2f}%**)",
         f"- **Błąd logitów TFLite FP16**: MAE = `{single['tflite_logit_mae']:.4f}`, Max Error = `{single['tflite_max_logit_error']:.4f}`",
-        f"- **Kalibracja ECE (15 binów, T=0.7848)**: {single['ece_tflite']*100:.2f}% (MCE = {single['mce_tflite']*100:.2f}%)",
-        f"- **Keep Rate bramki OOD (θ = -2.2082, minTop1Prob = 0.50)**: **{single['keep_rate_tflite']*100:.2f}%**",
+        f"- **Kalibracja ECE (15 binów, T={t_single:.4f})**: {single['ece_tflite']*100:.2f}% (MCE = {single['mce_tflite']*100:.2f}%)",
+        f"- **Keep Rate bramki OOD (θ = {theta:.4f}, minTop1Prob = {min_p:.2f})**: **{single['keep_rate_tflite']*100:.2f}%**",
         f"- **Dokładność po odcięciu (Conditional Accuracy)**: **{single['accuracy_conditional_tflite']*100:.2f}%**",
         "",
         "## 3. Audyt Bezpieczeństwa — Gatunki Wysokiego Ryzyka i Pary Niebezpieczne",
@@ -834,7 +994,16 @@ def render_ship_gates_markdown(report: dict[str, Any]) -> str:
         f"- **Próbki OOD test**: {ood['n_samples']} ({ood['n_fungi_test']} grzybów OOD, {ood['n_nonfungi_test']} nie-grzybów)",
         f"- **Odsetek odrzuconych przez energię**: {ood['energy_rejection_rate']*100:.2f}%",
         f"- **Odsetek Confident Edible na OOD test**: **{ood['confident_edible_rate']*100:.2f}%** (Wilson 95% UB: **{ood['wilson_upper_bound_95']*100:.2f}%**; Wymóg: rate <= 2%, UB <= 5%)",
-        f"- **Amanita verna (11 próbek testowych)**: {verna['energy_rejected'] + verna['unclear_rejected']}/11 odrzuconych, Confident Edible: `{verna['confident_toxic_as_edible']}`",
+    ])
+    if "fungi_test" in ood and "nonfungi_test" in ood:
+        f_sub = ood["fungi_test"]
+        nf_sub = ood["nonfungi_test"]
+        lines.extend([
+            f"  - `ood_nonfungi` ({nf_sub['n_samples']}): Confident Edible = **{nf_sub['confident_edible_rate_pct']:.2f}%** ({nf_sub['confident_edible_count']}/{nf_sub['n_samples']}), odrzucenie energią = {nf_sub['energy_rejection_rate']*100:.2f}%",
+            f"  - `ood_fungi` ({f_sub['n_samples']}): Confident Edible = **{f_sub['confident_edible_rate_pct']:.2f}%** ({f_sub['confident_edible_count']}/{f_sub['n_samples']}), odrzucenie energią = {f_sub['energy_rejection_rate']*100:.2f}%",
+        ])
+    lines.extend([
+        f"- **Amanita verna ({verna['n_samples']} próbek testowych)**: {verna['energy_rejected'] + verna['unclear_rejected']}/{verna['n_samples']} odrzuconych, Confident Edible: `{verna['confident_toxic_as_edible']}`",
         "",
         "## 5. Audyt Pipeline'u Wielokadrowego (P5)",
         "",
@@ -858,6 +1027,16 @@ def main() -> None:
     parser.add_argument("--ood-nonfungi-csv", type=str, default=str(DEFAULT_OOD_NONFUNGI_CSV), help="OOD nonfungi CSV")
     parser.add_argument("--karty-path", type=str, default=str(DEFAULT_KARTY_PATH), help="Path to karty_sobowtory.json")
     parser.add_argument("--output-dir", type=str, default=str(DEFAULT_OUTPUT_DIR), help="Output directory")
+    parser.add_argument("--crop-mode", type=str, default="none_stretch", help="Preprocessing crop mode")
+    parser.add_argument("--calib-cache", type=str, default="artifacts/calibration/extracted_logits.pt", help="Calibration cache path")
+    parser.add_argument("--temperature-single", type=float, default=FROZEN_TEMPERATURE_SINGLE, help="Frozen single-frame temperature")
+    parser.add_argument("--temperature-multi", type=float, default=FROZEN_TEMPERATURE_MULTI, help="Frozen multi-photo temperature")
+    parser.add_argument("--energy-threshold", type=float, default=FROZEN_ENERGY_THRESHOLD, help="Frozen energy threshold theta")
+    parser.add_argument("--min-top1-prob", type=float, default=FROZEN_MIN_TOP1_PROB, help="Frozen minimum top-1 probability")
+    parser.add_argument("--disagreement-threshold", type=float, default=FROZEN_DISAGREEMENT_THRESHOLD, help="Frozen multi-frame disagreement threshold")
+    parser.add_argument("--high-stakes-veto-threshold", type=float, default=FROZEN_HIGH_STAKES_VETO_THRESHOLD, help="Frozen high-stakes veto threshold")
+    parser.add_argument("--twin-pair-veto-threshold", type=float, default=FROZEN_TWIN_PAIR_VETO_THRESHOLD, help="Frozen twin-pair asymmetric veto threshold")
+    parser.add_argument("--twin-pair-min-ratio", type=float, default=FROZEN_TWIN_PAIR_MIN_RATIO, help="Frozen twin-pair minimum edible/toxic ratio")
 
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -871,6 +1050,16 @@ def main() -> None:
         ood_nonfungi_csv=args.ood_nonfungi_csv,
         karty_path=args.karty_path,
         output_dir=args.output_dir,
+        crop_mode=args.crop_mode,
+        calib_cache_path=args.calib_cache,
+        temperature_single=args.temperature_single,
+        temperature_multi=args.temperature_multi,
+        energy_threshold=args.energy_threshold,
+        min_top1_prob=args.min_top1_prob,
+        disagreement_threshold=args.disagreement_threshold,
+        high_stakes_veto_threshold=args.high_stakes_veto_threshold,
+        twin_pair_veto_threshold=args.twin_pair_veto_threshold,
+        twin_pair_min_ratio=args.twin_pair_min_ratio,
     )
 
 

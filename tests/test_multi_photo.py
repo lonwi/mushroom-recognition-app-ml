@@ -11,6 +11,7 @@ import torch
 
 from grzybobranie_ml.multi_photo import (
     MultiPhotoResult,
+    build_edible_to_toxic_twins,
     fuse_observation_frames,
     run_ood_threshold_sweep,
 )
@@ -563,4 +564,168 @@ def test_is_ood_property_coverage(mock_species_env: dict[str, Any]) -> None:
     )
     assert r_ok.is_ood is False
     assert r_ok.to_dict()["is_ood"] is False
+
+
+def test_asymmetric_twin_pair_threshold_veto(mock_species_env: dict[str, Any]) -> None:
+    """Direct toxic twin triggers HIGH_STAKES_VETO at p_t in [0.10, 0.20), while non-twin HS does not."""
+    pairs = [("macrolepiota_procera", "lepiota_brunneoincarnata")]
+    twins = build_edible_to_toxic_twins(
+        pairs, mock_species_env["edible_slugs"], set(mock_species_env["high_stakes_slugs"])
+    )
+    assert twins == {"macrolepiota_procera": {"lepiota_brunneoincarnata"}}
+
+    # Single frame: macrolepiota_procera (idx 0) ~0.85, lepiota_brunneoincarnata (idx 1) ~0.14 in [0.10, 0.20)
+    # Note: p_edible / p_twin ~ 6.07 >= 5.0, so ONLY the lowered 0.10 twin threshold catches it!
+    p_target = np.array([0.85, 0.14, 0.0025, 0.0025, 0.0025, 0.0025], dtype=np.float64)
+    logits = 0.8 * np.log(p_target) + 6.0
+
+    # Without dangerous_pairs, 0.14 < 0.20 would pass as OK
+    res_legacy = fuse_observation_frames(
+        logits=logits,
+        idx_to_class=mock_species_env["idx_to_class"],
+        class_to_idx=mock_species_env["class_to_idx"],
+        edible_slugs=mock_species_env["edible_slugs"],
+        high_stakes_slugs=mock_species_env["high_stakes_slugs"],
+        temperature_frame=0.8,
+        temperature_multi=0.5,
+        energy_threshold_frame=-1.0,
+        min_top1_prob=0.50,
+        high_stakes_veto_threshold=0.20,
+    )
+    assert res_legacy.status == "OK"
+
+    # With dangerous_pairs, direct twin at 0.14 >= 0.10 must trigger HIGH_STAKES_VETO
+    res_asym = fuse_observation_frames(
+        logits=logits,
+        idx_to_class=mock_species_env["idx_to_class"],
+        class_to_idx=mock_species_env["class_to_idx"],
+        edible_slugs=mock_species_env["edible_slugs"],
+        high_stakes_slugs=mock_species_env["high_stakes_slugs"],
+        temperature_frame=0.8,
+        temperature_multi=0.5,
+        energy_threshold_frame=-1.0,
+        min_top1_prob=0.50,
+        high_stakes_veto_threshold=0.20,
+        dangerous_pairs=pairs,
+        twin_pair_veto_threshold=0.10,
+        twin_pair_min_ratio=5.0,
+    )
+    assert res_asym.status == "HIGH_STAKES_VETO"
+    assert res_asym.confident_edible is False
+    assert any(
+        r["slug"] == "lepiota_brunneoincarnata" and r["reason"] == "twin_pair_threshold"
+        for r in res_asym.veto_risk_species
+    )
+
+    # Non-twin high-stakes species (amanita_phalloides idx 4) at 0.14 should NOT trigger twin veto on boletus_edulis
+    p_boletus = np.array([0.0025, 0.0025, 0.0025, 0.0025, 0.14, 0.85], dtype=np.float64)
+    logits_boletus = 0.8 * np.log(p_boletus) + 6.0
+    res_non_twin = fuse_observation_frames(
+        logits=logits_boletus,
+        idx_to_class=mock_species_env["idx_to_class"],
+        class_to_idx=mock_species_env["class_to_idx"],
+        edible_slugs=mock_species_env["edible_slugs"],
+        high_stakes_slugs=mock_species_env["high_stakes_slugs"],
+        temperature_frame=0.8,
+        temperature_multi=0.5,
+        energy_threshold_frame=-1.0,
+        min_top1_prob=0.50,
+        high_stakes_veto_threshold=0.20,
+        dangerous_pairs=pairs,
+        twin_pair_veto_threshold=0.10,
+        twin_pair_min_ratio=5.0,
+    )
+    assert res_non_twin.status == "OK"
+    assert res_non_twin.confident_edible is True
+
+
+def test_asymmetric_twin_pair_ratio_veto_fused_and_frame(mock_species_env: dict[str, Any]) -> None:
+    """Block confident edible when p_edible < 5 * p_toxic_pair even when p_toxic_pair < 0.10."""
+    pairs = [("agaricus_campestris", "agaricus_xanthodermus")]
+
+    # Case A: Single/fused prob for agaricus_campestris (idx 2) = 0.42, agaricus_xanthodermus (idx 3) = 0.09
+    # p_t = 0.09 < 0.10, BUT 0.42 < 5 * 0.09 = 0.45 -> ratio is 4.67 < 5.0 -> HIGH_STAKES_VETO!
+    p_fused_viol = np.array([0.20, 0.10, 0.42, 0.09, 0.10, 0.09], dtype=np.float64)
+    logits_fused_viol = 0.8 * np.log(p_fused_viol) + 6.0
+    res_fused = fuse_observation_frames(
+        logits=logits_fused_viol,
+        idx_to_class=mock_species_env["idx_to_class"],
+        class_to_idx=mock_species_env["class_to_idx"],
+        edible_slugs=mock_species_env["edible_slugs"],
+        high_stakes_slugs=mock_species_env["high_stakes_slugs"],
+        temperature_frame=0.8,
+        temperature_multi=0.5,
+        energy_threshold_frame=-1.0,
+        min_top1_prob=0.40,
+        dangerous_pairs=pairs,
+        twin_pair_veto_threshold=0.10,
+        twin_pair_min_ratio=5.0,
+    )
+    assert res_fused.status == "HIGH_STAKES_VETO"
+    assert res_fused.confident_edible is False
+    assert any(r["reason"] == "twin_pair_ratio_fused" for r in res_fused.veto_risk_species)
+
+    # Case B: 2 accepted frames — frame 0 is strong campestris (0.95), frame 1 is ambiguous (0.25 vs 0.08 twin).
+    # Fused passes 5x dominance, and p_twin < 0.10 everywhere, BUT frame 1 violates 0.25 < 5 * 0.08!
+    p_f0 = np.array([0.01, 0.01, 0.95, 0.01, 0.01, 0.01], dtype=np.float64)
+    p_f1 = np.array([0.30, 0.10, 0.25, 0.08, 0.15, 0.12], dtype=np.float64)
+    logits_2 = np.stack([0.8 * np.log(p_f0) + 6.0, 0.8 * np.log(p_f1) + 6.0], axis=0)
+    res_frame = fuse_observation_frames(
+        logits=logits_2,
+        idx_to_class=mock_species_env["idx_to_class"],
+        class_to_idx=mock_species_env["class_to_idx"],
+        edible_slugs=mock_species_env["edible_slugs"],
+        high_stakes_slugs=mock_species_env["high_stakes_slugs"],
+        temperature_frame=0.8,
+        temperature_multi=0.5,
+        energy_threshold_frame=-1.0,
+        min_top1_prob=0.50,
+        dangerous_pairs=pairs,
+        twin_pair_veto_threshold=0.10,
+        twin_pair_min_ratio=5.0,
+    )
+    assert res_frame.status == "HIGH_STAKES_VETO"
+    assert any(r["reason"] == "twin_pair_ratio_frame" and r["frame_idx"] == 1 for r in res_frame.veto_risk_species)
+
+    # Case C: Positive control — p_twin = 0.08 < 0.10 and p_edible = 0.70 >= 5 * 0.08 -> OK!
+    p_ok = np.array([0.10, 0.05, 0.70, 0.08, 0.04, 0.03], dtype=np.float64)
+    res_ok = fuse_observation_frames(
+        logits=0.8 * np.log(p_ok) + 6.0,
+        idx_to_class=mock_species_env["idx_to_class"],
+        class_to_idx=mock_species_env["class_to_idx"],
+        edible_slugs=mock_species_env["edible_slugs"],
+        high_stakes_slugs=mock_species_env["high_stakes_slugs"],
+        temperature_frame=0.8,
+        temperature_multi=0.5,
+        energy_threshold_frame=-1.0,
+        min_top1_prob=0.50,
+        dangerous_pairs=pairs,
+        twin_pair_veto_threshold=0.10,
+        twin_pair_min_ratio=5.0,
+    )
+    assert res_ok.status == "OK"
+    assert res_ok.confident_edible is True
+
+    # Case D: Per-frame p_twin < 0.10 and ratio >= 5.0 on every frame, but after logit averaging
+    # non-twin distractors cancel out so fused p_twin >= 0.10 (even if ratio >= 5.0) -> HIGH_STAKES_VETO!
+    p_d0 = np.array([0.35, 0.005, 0.55, 0.085, 0.005, 0.005], dtype=np.float64)
+    p_d1 = np.array([0.005, 0.35, 0.55, 0.085, 0.005, 0.005], dtype=np.float64)
+    logits_d = np.stack([0.8 * np.log(p_d0) + 6.0, 0.8 * np.log(p_d1) + 6.0], axis=0)
+    res_fused_thresh = fuse_observation_frames(
+        logits=logits_d,
+        idx_to_class=mock_species_env["idx_to_class"],
+        class_to_idx=mock_species_env["class_to_idx"],
+        edible_slugs=mock_species_env["edible_slugs"],
+        high_stakes_slugs=mock_species_env["high_stakes_slugs"],
+        temperature_frame=0.8,
+        temperature_multi=0.9,
+        energy_threshold_frame=-1.0,
+        min_top1_prob=0.50,
+        dangerous_pairs=pairs,
+        twin_pair_veto_threshold=0.10,
+        twin_pair_min_ratio=5.0,
+    )
+    assert res_fused_thresh.status == "HIGH_STAKES_VETO"
+    assert res_fused_thresh.confident_edible is False
+    assert any(r["reason"] == "twin_pair_threshold_fused" for r in res_fused_thresh.veto_risk_species)
 

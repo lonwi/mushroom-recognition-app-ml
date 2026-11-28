@@ -174,3 +174,28 @@ def test_dummy_export_and_fp16_quantize() -> None:
         assert "DEQUANTIZE" in ops
         assert "6" not in ops
 
+
+def test_disable_fused_attention_helper() -> None:
+    """_disable_fused_attention sets fused_attn=False on nested attention modules."""
+    from grzybobranie_ml.export_tflite import _disable_fused_attention
+
+    class MockAttn(nn.Module):
+        def __init__(self, fused: bool) -> None:
+            super().__init__()
+            self.fused_attn = fused
+
+    class MockModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.a1 = MockAttn(True)
+            self.a2 = MockAttn(False)
+            self.sub = nn.Sequential(MockAttn(True))
+
+    m = MockModel()
+    count = _disable_fused_attention(m)
+    assert count == 2
+    assert m.a1.fused_attn is False
+    assert m.a2.fused_attn is False
+    assert m.sub[0].fused_attn is False
+
+

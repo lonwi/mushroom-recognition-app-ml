@@ -1,14 +1,14 @@
-"""Generate a Pileus-styled Side-by-Side look-alike comparison PNG for dev.to.
+"""Generate a flat editorial Side-by-Side look-alike comparison JPG for dev.to.
 
-Applies the Pileus v1.0 ("Nordic Botanical Paper") visual design system:
-- paper: #F6F5F1, surface: #FFFFFF, ink: #1B382B, muted: #3E5348, border: #DCDAD3
-- edible badge: #E8F5E9 / #1F6B2A / #81C784
-- deadly badge: #2A080C / #FF4560 / #FF1744
-- typography: Plus Jakarta Sans (with DejaVu fallback)
+Applies a minimalist flat editorial style on #F7F6F2:
+- No white cards, no drop shadows
+- 6 px rounded photo corners with thin 1 px #DCD9CF border
+- Lightweight outline pills (EDIBLE in #163827, DEADLY in #A61C1C)
+- Typography: Plus Jakarta Sans (with DejaVu fallback)
 
 Reads two CC0-licensed validation photos without modifying any dataset files.
 Output:
-- artifacts/blog/images/lookalike_side_by_side.png
+- artifacts/blog/images/lookalike_side_by_side.jpg (<= 1600 px, JPEG quality 85)
 """
 
 from __future__ import annotations
@@ -23,28 +23,18 @@ VAL_CSV = Path("data/splits/val.csv")
 TEST_CSV = Path("data/splits/test.csv")
 MANIFEST_CSV = Path("/home/bubolka/hf-768/upload/manifest_768.csv")
 IMAGE_ROOT = Path("/home/bubolka/hf-768/upload")
-OUT_PNG = Path("artifacts/blog/images/lookalike_side_by_side.png")
+OUT_JPG = Path("artifacts/blog/images/lookalike_side_by_side.jpg")
 
 LEFT_PATH = Path("images/kuehneromyces_mutabilis/155421201.jpg")
 RIGHT_PATH = Path("images/galerina_marginata/582568029.jpg")
 
-# Pileus v1.0 Nordic Botanical Paper palette
-PILEUS = {
-    "paper": "#F6F5F1",
-    "surface": "#FFFFFF",
-    "surface_raised": "#EAE6DC",
-    "ink": "#1B382B",
-    "muted": "#3E5348",
-    "border": "#DCDAD3",
-    "shadow": "#E2DFD5",
-    "edible_bg": "#E8F5E9",
-    "edible_text": "#1F6B2A",
-    "edible_border": "#81C784",
-    "deadly_bg": "#2A080C",
-    "deadly_text": "#FF4560",
-    "deadly_border": "#FF1744",
-    "poisonous_bg": "#FFEBEE",
-    "poisonous_border": "#FF8A80",
+PALETTE = {
+    "paper": "#F7F6F2",
+    "ink": "#1A1F1C",
+    "muted": "#5C635E",
+    "border": "#DCD9CF",
+    "green": "#163827",
+    "red": "#A61C1C",
 }
 
 
@@ -133,41 +123,38 @@ def main() -> None:
     left_meta = meta[str(LEFT_PATH)]
     right_meta = meta[str(RIGHT_PATH)]
 
-    # Pileus 8-dp grid layout (scaled 2x cleanly -> 1848x980 px @ 300 DPI)
+    # Flat editorial layout (1560 px wide <= 1600 px, generous whitespace)
     margin_x = 56
-    gutter = 40
-    card_pad = 16
-    img_w, img_h = 816, 612
-    card_w = img_w + card_pad * 2
+    gutter = 48
+    img_w, img_h = 700, 525
     header_h = 128
-    caption_h = 144
-    card_h = card_pad + img_h + caption_h
-    bottom_pad = 40
+    caption_h = 134
+    bottom_pad = 36
 
-    canvas_w = margin_x * 2 + card_w * 2 + gutter
-    canvas_h = header_h + card_h + bottom_pad
+    canvas_w = margin_x * 2 + img_w * 2 + gutter
+    canvas_h = header_h + img_h + caption_h + bottom_pad
 
-    canvas = Image.new("RGBA", (canvas_w, canvas_h), PILEUS["paper"])
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), PALETTE["paper"])
     draw = ImageDraw.Draw(canvas)
 
-    f_title = ImageFont.truetype(_resolve_font("bold"), 36)
-    f_sub = ImageFont.truetype(_resolve_font("regular"), 19)
-    f_species_italic = ImageFont.truetype(_resolve_font("italic"), 26)
-    f_species_status = ImageFont.truetype(_resolve_font("bold"), 26)
-    f_badge = ImageFont.truetype(_resolve_font("bold"), 14)
-    f_hint = ImageFont.truetype(_resolve_font("regular"), 17)
-    f_attr = ImageFont.truetype(_resolve_font("regular"), 14)
+    f_title = ImageFont.truetype(_resolve_font("bold"), 32)
+    f_sub = ImageFont.truetype(_resolve_font("regular"), 17)
+    f_species_italic = ImageFont.truetype(_resolve_font("italic"), 23)
+    f_species_status = ImageFont.truetype(_resolve_font("semibold"), 22)
+    f_badge = ImageFont.truetype(_resolve_font("semibold"), 12)
+    f_hint = ImageFont.truetype(_resolve_font("regular"), 15)
+    f_attr = ImageFont.truetype(_resolve_font("regular"), 13)
 
-    # Top header (Botanical Paper Ink)
-    draw.text((margin_x, 34), "Deadly Look-Alike Pair: Edible vs. Lethal Double", font=f_title, fill=PILEUS["ink"])
+    # Top header directly on #F7F6F2
+    draw.text((margin_x, 34), "Deadly Look-Alike Pair: Edible vs. Lethal Double", font=f_title, fill=PALETTE["ink"])
     draw.text(
-        (margin_x, 82),
+        (margin_x, 78),
         "Shared habitat on mossy wood and near-identical golden-brown caps require high-resolution stem & gill cues",
         font=f_sub,
-        fill=PILEUS["muted"],
+        fill=PALETTE["muted"],
     )
 
-    cards = [
+    items = [
         {
             "x": margin_x,
             "img_path": IMAGE_ROOT / LEFT_PATH,
@@ -175,105 +162,80 @@ def main() -> None:
             "species_name": "Kuehneromyces mutabilis",
             "status_text": " (Edible)",
             "badge_label": "EDIBLE",
-            "badge_bg": PILEUS["edible_bg"],
-            "badge_text": PILEUS["edible_text"],
-            "badge_border": PILEUS["edible_border"],
-            "accent": PILEUS["edible_text"],
-            "card_border": PILEUS["edible_border"],
+            "accent": PALETTE["green"],
             "hint": "Diagnostic cue: distinct dark scales on lower stem below the ring",
         },
         {
-            "x": margin_x + card_w + gutter,
+            "x": margin_x + img_w + gutter,
             "img_path": IMAGE_ROOT / RIGHT_PATH,
             "meta": right_meta,
             "species_name": "Galerina marginata",
             "status_text": " (Deadly)",
-            "badge_label": "DEADLY POISONOUS",
-            "badge_bg": PILEUS["deadly_bg"],
-            "badge_text": PILEUS["deadly_text"],
-            "badge_border": PILEUS["deadly_border"],
-            "accent": PILEUS["deadly_bg"],
-            "card_border": PILEUS["poisonous_border"],
+            "badge_label": "DEADLY",
+            "accent": PALETTE["red"],
             "hint": "Diagnostic cue: smooth/fibrillose stem; contains lethal amatoxins",
         },
     ]
 
-    for card in cards:
-        cx = int(card["x"])
-        cy = header_h
+    for item in items:
+        ix = int(item["x"])
+        iy = header_h
 
-        # Sharp paper offset shadow (Pileus elevation.level2)
-        draw.rounded_rectangle(
-            (cx + 4, cy + 4, cx + card_w + 4, cy + card_h + 4),
-            radius=12,
-            fill=PILEUS["shadow"],
-        )
-        # Main surface card (#FFFFFF)
-        draw.rounded_rectangle(
-            (cx, cy, cx + card_w, cy + card_h),
-            radius=12,
-            fill=PILEUS["surface"],
-            outline=PILEUS["border"],
-            width=2,
-        )
-
-        # Paste rounded photo inside card padding
-        ix, iy = cx + card_pad, cy + card_pad
-        with Image.open(Path(str(card["img_path"]))) as src_img:
-            rounded = _rounded_image(src_img, img_w, img_h, radius=8)
+        # Photo directly on #F7F6F2 with 6 px rounded corners and 1 px #DCD9CF border
+        with Image.open(Path(str(item["img_path"]))) as src_img:
+            rounded = _rounded_image(src_img, img_w, img_h, radius=6)
             canvas.alpha_composite(rounded, dest=(ix, iy))
 
         draw.rounded_rectangle(
             (ix, iy, ix + img_w, iy + img_h),
-            radius=8,
-            outline=str(card["card_border"]),
-            width=2,
+            radius=6,
+            outline=PALETTE["border"],
+            width=1,
         )
 
-        # Caption row inside card below photo
-        tx = cx + card_pad + 4
-        ty = iy + img_h + 18
-        sp_name = str(card["species_name"])
-        st_text = str(card["status_text"])
+        # Clean flat typography directly below photo
+        tx = ix
+        ty = iy + img_h + 22
+        sp_name = str(item["species_name"])
+        st_text = str(item["status_text"])
+        accent = str(item["accent"])
 
-        draw.text((tx, ty), sp_name, font=f_species_italic, fill=PILEUS["ink"])
+        draw.text((tx, ty), sp_name, font=f_species_italic, fill=PALETTE["ink"])
         bbox_sp = draw.textbbox((tx, ty), sp_name, font=f_species_italic)
-        status_fill = PILEUS["edible_text"] if card["badge_label"] == "EDIBLE" else "#AD1414"
-        draw.text((bbox_sp[2], ty), st_text, font=f_species_status, fill=status_fill)
+        draw.text((bbox_sp[2] + 2, ty + 1), st_text, font=f_species_status, fill=accent)
 
-        # Right-aligned Pileus status pill badge (Edible vs Deadly Badge)
-        badge_txt = str(card["badge_label"])
+        # Lightweight outline pill (transparent bg, 1 px border)
+        badge_txt = str(item["badge_label"])
         b_box = draw.textbbox((0, 0), badge_txt, font=f_badge)
-        bw = (b_box[2] - b_box[0]) + 22
-        bh = 30
-        bx = cx + card_w - card_pad - 4 - bw
+        bw = (b_box[2] - b_box[0]) + 20
+        bh = 24
+        bx = ix + img_w - bw
         by = ty + 2
         draw.rounded_rectangle(
             (bx, by, bx + bw, by + bh),
-            radius=6,
-            fill=str(card["badge_bg"]),
-            outline=str(card["badge_border"]),
-            width=2,
+            radius=5,
+            fill=None,
+            outline=accent,
+            width=1,
         )
         draw.text(
-            (bx + 11 - b_box[0], by + (bh - (b_box[3] - b_box[1])) / 2 - b_box[1]),
+            (bx + 10 - b_box[0], by + (bh - (b_box[3] - b_box[1])) / 2 - b_box[1]),
             badge_txt,
             font=f_badge,
-            fill=str(card["badge_text"]),
+            fill=accent,
         )
 
-        # Diagnostic cue
-        draw.text((tx, ty + 42), str(card["hint"]), font=f_hint, fill=PILEUS["ink"])
+        # Diagnostic cue & attribution
+        draw.text((tx, ty + 38), str(item["hint"]), font=f_hint, fill=PALETTE["ink"])
 
-        # Subtle attribution strip inside raised surface tint
-        m = card["meta"]
+        m = item["meta"]
         obs_credit = m["observer"] or m["author"]
         attr_line = f"Source: iNaturalist #{m['obs_id']} (observer: {obs_credit})  ·  License: {m['license']} (Public Domain)"
-        draw.text((tx, ty + 78), attr_line, font=f_attr, fill=PILEUS["muted"])
+        draw.text((tx, ty + 68), attr_line, font=f_attr, fill=PALETTE["muted"])
 
-    OUT_PNG.parent.mkdir(parents=True, exist_ok=True)
-    canvas.convert("RGB").save(OUT_PNG, dpi=(300, 300), quality=95)
-    print(f"Saved Pileus look-alike card: {OUT_PNG} ({canvas_w}x{canvas_h} px @ 300 DPI)")
+    OUT_JPG.parent.mkdir(parents=True, exist_ok=True)
+    canvas.convert("RGB").save(OUT_JPG, format="JPEG", quality=85, optimize=True, progressive=True, dpi=(300, 300))
+    print(f"Saved flat editorial look-alike JPG: {OUT_JPG} ({canvas_w}x{canvas_h} px, {OUT_JPG.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":

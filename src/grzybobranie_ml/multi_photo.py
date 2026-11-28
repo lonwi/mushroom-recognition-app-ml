@@ -18,6 +18,7 @@ import argparse
 import json
 import logging
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -123,6 +124,21 @@ def load_species_edibility_sets(karty_path: str | Path = DEFAULT_KARTY_PATH) -> 
     return edible_slugs, toxic_or_deadly_slugs, lethal_slugs
 
 
+def build_edible_to_toxic_twins(
+    dangerous_pairs: Sequence[tuple[str, str]],
+    edible_slugs: set[str],
+    high_stakes_or_toxic_slugs: set[str],
+) -> dict[str, set[str]]:
+    """Map each edible species slug to its direct toxic/high-stakes look-alike twins."""
+    twins: dict[str, set[str]] = defaultdict(set)
+    for a, b in dangerous_pairs:
+        if a in edible_slugs and b in high_stakes_or_toxic_slugs:
+            twins[a].add(b)
+        if b in edible_slugs and a in high_stakes_or_toxic_slugs:
+            twins[b].add(a)
+    return dict(twins)
+
+
 def fuse_observation_frames(
     logits: np.ndarray | torch.Tensor | list[Any],
     idx_to_class: dict[int, str],
@@ -137,6 +153,9 @@ def fuse_observation_frames(
     disagreement_prob_threshold: float = 0.70,
     high_stakes_veto_threshold: float = 0.20,
     veto_check_all_frames: bool = True,
+    dangerous_pairs: Sequence[tuple[str, str]] | None = None,
+    twin_pair_veto_threshold: float = 0.10,
+    twin_pair_min_ratio: float = 5.0,
 ) -> MultiPhotoResult:
     """Execute 4-step multi-photo fusion pipeline on a batch of logits for one specimen.
 
@@ -144,8 +163,13 @@ def fuse_observation_frames(
     1. Per-frame OOD filter: reject frames with E(x_i) > energy_threshold_frame. If all rejected, return ALL_FRAMES_OOD.
     2. Disagreement check: if >= 2 accepted frames have p_top1 >= 0.70 for different species, return CONFLICT_DETECTED.
     3. Logit Averaging + Calibration: bar_z = mean(z_accepted), calibrate with temperature_multi, gate on E and min_top1_prob.
-    4. High-Stakes Veto: if fused prediction is edible, check if any single frame (default: all frames) had
-       p_toxic >= 0.20 for any high-stakes species. If so, return HIGH_STAKES_VETO and block confident edible.
+    4. High-Stakes Veto: if fused prediction is edible:
+       (a) check if any single frame (default: all frames) had p_toxic >= high_stakes_veto_threshold (0.20)
+           for any high-stakes species;
+       (b) asymmetric twin-pair check: if the predicted edible species has direct toxic twin(s) in
+           ``dangerous_pairs``, require across checked frames ``p_t < twin_pair_veto_threshold`` (0.10)
+           AND clear dominance ``p_e >= twin_pair_min_ratio * p_t`` (5.0x) on both fused probabilities
+           and accepted individual frames. If any condition fails, return HIGH_STAKES_VETO.
     """
     if isinstance(logits, torch.Tensor):
         logits = logits.detach().cpu().numpy()
@@ -166,9 +190,16 @@ def fuse_observation_frames(
 
     if temperature_frame <= 0 or temperature_multi <= 0:
         raise ValueError("Temperatures must be strictly positive.")
+    if twin_pair_veto_threshold < 0 or twin_pair_min_ratio < 0:
+        raise ValueError("Twin pair veto thresholds must be non-negative.")
 
     high_stakes_set = set(high_stakes_slugs)
     high_stakes_indices = {class_to_idx[s]: s for s in high_stakes_set if s in class_to_idx}
+    edible_to_twins = (
+        build_edible_to_toxic_twins(dangerous_pairs, edible_slugs, high_stakes_set)
+        if dangerous_pairs
+        else {}
+    )
 
     if energy_threshold_fused is None:
         energy_threshold_fused = energy_threshold_frame
@@ -306,7 +337,7 @@ def fuse_observation_frames(
         )
 
     # Step 4: High-Stakes Safety Veto
-    # If top-1 is edible, check whether on any single frame any high-stakes species >= veto threshold
+    # If top-1 is edible, check general high-stakes threshold and asymmetric dangerous-pair veto
     veto_risks: list[dict[str, Any]] = []
     frames_to_check = range(total_frames) if veto_check_all_frames else accepted_frames
 
@@ -320,7 +351,63 @@ def fuse_observation_frames(
                         "class_idx": hs_idx,
                         "probability": p_toxic,
                         "frame_idx": f_idx,
+                        "reason": "high_stakes_threshold",
                     })
+
+        direct_twins = sorted(edible_to_twins.get(fused_slug, set()))
+        for twin_slug in direct_twins:
+            if twin_slug not in class_to_idx:
+                continue
+            twin_idx = class_to_idx[twin_slug]
+
+            # (a) Direct toxic twin probability >= twin_pair_veto_threshold (0.10) on any checked frame or fused output
+            for f_idx in frames_to_check:
+                p_twin_f = float(frame_probs[f_idx, twin_idx])
+                if p_twin_f >= twin_pair_veto_threshold:
+                    veto_risks.append({
+                        "slug": twin_slug,
+                        "class_idx": twin_idx,
+                        "probability": p_twin_f,
+                        "frame_idx": f_idx,
+                        "reason": "twin_pair_threshold",
+                    })
+
+            p_twin_fused = float(fused_probs[twin_idx])
+            if p_twin_fused >= twin_pair_veto_threshold:
+                veto_risks.append({
+                    "slug": twin_slug,
+                    "class_idx": twin_idx,
+                    "probability": p_twin_fused,
+                    "frame_idx": None,
+                    "reason": "twin_pair_threshold_fused",
+                })
+
+            # (b) Clear dominance p_edible >= twin_pair_min_ratio * p_toxic_pair on accepted frames
+            for f_idx in accepted_frames:
+                p_edible_f = float(frame_probs[f_idx, fused_top1_idx])
+                p_twin_f = float(frame_probs[f_idx, twin_idx])
+                if p_edible_f < twin_pair_min_ratio * p_twin_f:
+                    veto_risks.append({
+                        "slug": twin_slug,
+                        "class_idx": twin_idx,
+                        "probability": p_twin_f,
+                        "edible_probability": p_edible_f,
+                        "ratio": float(p_edible_f / p_twin_f) if p_twin_f > 0 else float("inf"),
+                        "frame_idx": f_idx,
+                        "reason": "twin_pair_ratio_frame",
+                    })
+
+            # (c) Clear dominance p_edible >= twin_pair_min_ratio * p_toxic_pair on fused distribution
+            if fused_confidence < twin_pair_min_ratio * p_twin_fused:
+                veto_risks.append({
+                    "slug": twin_slug,
+                    "class_idx": twin_idx,
+                    "probability": p_twin_fused,
+                    "edible_probability": fused_confidence,
+                    "ratio": float(fused_confidence / p_twin_fused) if p_twin_fused > 0 else float("inf"),
+                    "frame_idx": None,
+                    "reason": "twin_pair_ratio_fused",
+                })
 
     if len(veto_risks) > 0:
         return MultiPhotoResult(
@@ -531,6 +618,9 @@ def evaluate_val_multi_photo(
     disagreement_prob_threshold: float = 0.70,
     high_stakes_veto_threshold: float = 0.20,
     veto_check_all_frames: bool = True,
+    twin_pair_veto_threshold: float = 0.10,
+    twin_pair_min_ratio: float = 5.0,
+    temperature_single: float | None = None,
 ) -> dict[str, Any]:
     """Evaluate multi-photo fusion pipeline on val.csv observation groups."""
     out_dir = Path(output_dir)
@@ -545,6 +635,7 @@ def evaluate_val_multi_photo(
 
     edible_slugs, toxic_slugs, _lethal_slugs = load_species_edibility_sets(karty_path)
     high_stakes_slugs = sorted([s for s in load_high_stakes_species(karty_path) if s in class_to_idx])
+    all_pairs = load_dangerous_pairs(karty_path)
 
     # 1. Group val records by observation
     obs_map: dict[str, list[int]] = defaultdict(list)
@@ -570,7 +661,11 @@ def evaluate_val_multi_photo(
         sum(len(idxs) for idxs in multi_obs.values()),
     )
 
-    t_single = 0.78479995600372
+    t_single = (
+        float(temperature_single)
+        if temperature_single is not None
+        else float(fit_temperature_scaling(val_logits, val_targets, initial_t=1.0))
+    )
 
     # 2. Fit T_multi specifically on fused multi-photo observations
     multi_fused_logits_raw: list[np.ndarray] = []
@@ -625,6 +720,9 @@ def evaluate_val_multi_photo(
             disagreement_prob_threshold=disagreement_prob_threshold,
             high_stakes_veto_threshold=high_stakes_veto_threshold,
             veto_check_all_frames=veto_check_all_frames,
+            dangerous_pairs=all_pairs,
+            twin_pair_veto_threshold=twin_pair_veto_threshold,
+            twin_pair_min_ratio=twin_pair_min_ratio,
         )
         multi_results[oid] = res
         status_counts[res.status] += 1
@@ -646,6 +744,9 @@ def evaluate_val_multi_photo(
             disagreement_prob_threshold=disagreement_prob_threshold,
             high_stakes_veto_threshold=high_stakes_veto_threshold,
             veto_check_all_frames=veto_check_all_frames,
+            dangerous_pairs=all_pairs,
+            twin_pair_veto_threshold=twin_pair_veto_threshold,
+            twin_pair_min_ratio=twin_pair_min_ratio,
         )
         all_obs_results[oid] = res
 
@@ -661,7 +762,6 @@ def evaluate_val_multi_photo(
         ("neoboletus_luridiformis", "suillellus_luridus"),
     ]
 
-    all_pairs = load_dangerous_pairs(karty_path)
     active_pairs = [(a, b) for a, b in all_pairs if a in class_to_idx and b in class_to_idx]
 
     pairs_evaluation: dict[str, Any] = {}
@@ -840,6 +940,8 @@ def evaluate_val_multi_photo(
             "min_top1_prob": float(min_top1_prob),
             "disagreement_prob_threshold": float(disagreement_prob_threshold),
             "high_stakes_veto_threshold": float(high_stakes_veto_threshold),
+            "twin_pair_veto_threshold": float(twin_pair_veto_threshold),
+            "twin_pair_min_ratio": float(twin_pair_min_ratio),
             "veto_check_all_frames": bool(veto_check_all_frames),
         },
         "dataset_summary": {
@@ -899,6 +1001,10 @@ def main() -> None:
     parser.add_argument("--min-top1-prob", type=float, default=0.50, help="Minimum top1 confidence.")
     parser.add_argument("--disagreement-threshold", type=float, default=0.70, help="Disagreement confidence threshold.")
     parser.add_argument("--veto-threshold", type=float, default=0.20, help="High-stakes veto probability threshold.")
+    parser.add_argument("--twin-veto-threshold", type=float, default=0.10, help="Direct toxic twin veto probability threshold.")
+    parser.add_argument("--twin-min-ratio", type=float, default=5.0, help="Minimum p_edible / p_toxic_twin ratio required.")
+    parser.add_argument("--temperature-single", type=float, default=None, help="Single-frame temperature T (auto-fit on val if omitted).")
+    parser.add_argument("--sweep-out", type=str, default=None, help="Output JSON path for OOD threshold sweep.")
     parser.add_argument(
         "--no-veto-all-frames",
         action="store_true",
@@ -917,13 +1023,20 @@ def main() -> None:
         raise FileNotFoundError(f"Cached logits not found at {cached_p}. Run calibrate_ood first.")
 
     cache = torch.load(cached_p, map_location="cpu", weights_only=False)
+    val_logits_np = cache["val_logits"].double().numpy()
+    val_targets_np = np.array(cache["val_targets"], dtype=np.int64)
+    eff_t_single = (
+        float(args.temperature_single)
+        if args.temperature_single is not None
+        else float(fit_temperature_scaling(val_logits_np, val_targets_np, initial_t=1.0))
+    )
 
     if run_sweep:
-        logger.info("Executing 2D OOD threshold sweep on val.csv and ood_calib...")
+        logger.info("Executing 2D OOD threshold sweep on val.csv and ood_calib (T=%.4f)...", eff_t_single)
         edible_slugs, toxic_slugs, _ = load_species_edibility_sets(args.karty_path)
         sweep_res = run_ood_threshold_sweep(
-            val_logits=cache["val_logits"].double().numpy(),
-            val_targets=np.array(cache["val_targets"], dtype=np.int64),
+            val_logits=val_logits_np,
+            val_targets=val_targets_np,
             ood_fungi_logits=cache["ood_fungi_logits"].double().numpy(),
             ood_fungi_records=cache["ood_fungi_records"],
             ood_nonfungi_logits=cache["ood_nonfungi_logits"].double().numpy(),
@@ -932,16 +1045,21 @@ def main() -> None:
             class_to_idx=cache["class_to_idx_66"],
             edible_slugs=edible_slugs,
             toxic_slugs=toxic_slugs,
-            temperature=0.78479995600372,
+            temperature=eff_t_single,
         )
-        sweep_out = DEFAULT_CALIBRATION_OUTPUT_DIR / "ood_sweep_results.json"
+        if args.sweep_out:
+            sweep_out = Path(args.sweep_out)
+        elif Path(args.output_dir) != DEFAULT_MULTI_PHOTO_OUTPUT_DIR:
+            sweep_out = Path(args.output_dir) / "ood_sweep_results.json"
+        else:
+            sweep_out = DEFAULT_CALIBRATION_OUTPUT_DIR / "ood_sweep_results.json"
         sweep_out.parent.mkdir(parents=True, exist_ok=True)
         with open(sweep_out, "w", encoding="utf-8") as f:
             json.dump(sweep_res, f, indent=2)
         logger.info("Saved OOD sweep results to %s", sweep_out)
 
     if run_eval:
-        logger.info("Executing Multi-Photo Fusion evaluation on val.csv...")
+        logger.info("Executing Multi-Photo Fusion evaluation on val.csv (T=%.4f)...", eff_t_single)
         evaluate_val_multi_photo(
             cached_logits_path=args.cached_logits,
             karty_path=args.karty_path,
@@ -951,6 +1069,9 @@ def main() -> None:
             disagreement_prob_threshold=args.disagreement_threshold,
             high_stakes_veto_threshold=args.veto_threshold,
             veto_check_all_frames=not args.no_veto_all_frames,
+            twin_pair_veto_threshold=args.twin_veto_threshold,
+            twin_pair_min_ratio=args.twin_min_ratio,
+            temperature_single=eff_t_single,
         )
 
 

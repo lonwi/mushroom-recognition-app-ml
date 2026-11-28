@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from grzybobranie_ml.preprocess import preprocess
+from grzybobranie_ml.preprocess import baseline_preprocessing, preprocess
 
 FIXTURE_SCHEMA_VERSION = "1.0.1"
 GENERATOR = "grzybobranie_ml.make_p1_fixtures"
@@ -28,34 +28,6 @@ FORMAT_ID = "ml/fixtures/p1/parity.json"
 # ImageNet-style mean/std used only in an extra mean_std case, not the baseline.
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
-
-
-def baseline_preprocessing(n: int) -> dict[str, Any]:
-    """Prototype / schema-example baseline for a square input of size N."""
-    return {
-        "inputSize": {"width": n, "height": n},
-        "exifOrientation": "apply",
-        "colorOrder": "RGB",
-        "decodeMinWidth": 448,
-        "resize": {
-            "steps": [
-                {
-                    "op": "to_width",
-                    "value": 448,
-                    "filter": "box",
-                    "antialias": True,
-                },
-                {"op": "to_size", "filter": "box", "antialias": True},
-            ]
-        },
-        "crop": "none_stretch",
-        "rounding": "half_up_uint8",
-        "normalization": {
-            "type": "scale_offset",
-            "scale": 1.0 / 127.5,
-            "offset": -1.0,
-        },
-    }
 
 
 def _pattern(width: int, height: int, seed: int = 0) -> np.ndarray:
