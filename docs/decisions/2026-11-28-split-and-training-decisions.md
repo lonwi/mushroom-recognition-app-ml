@@ -1,6 +1,6 @@
 # Decyzje: podział danych (R-01), raport high_stakes, baseline treningowy
 
-> Data: 2026-11-28. Status: **potwierdzone decyzje Wojciecha z 28.11.2026**, uzupełnione odpowiedziami agenta danych. Otwarte punkty są w sekcji 6.
+> Data: 2026-11-28. Status: **potwierdzone decyzje Wojciecha z 28.11.2026**, w tym przypięcie rewizji HF i K=67 (14:15 Europe/Warsaw). Otwarte punkty są w sekcji 6.
 > Powiązane: `DATA_CONTRACT.md`, `README.md` (reguły projektu), `docs/decisions/krok3-decyzje.md`.
 
 ## 1. Decyzje o danych z 22.11 i 28.11.2026
@@ -18,6 +18,9 @@ Z 28.11.2026 (Wojciech):
 6. **Destylacja do modelu mobilnego** zostanie rozstrzygnięta **po baseline**.
 7. **`data/png_cache/{224,256}` usunięte** z README i z tej dokumentacji. Preprocessing P1 działa na zdekodowanym JPEG-u; cache PNG nie jest potrzebny. (Katalogi `.gitkeep` i wpis w `scripts/init_env.py` mogą jeszcze istnieć w drzewie roboczym — do posprzątania przy implementacji `prepare_data`, nie w tym PR dokumentacyjnym.)
 8. **Kopie robocze danych** (HF, `data/`, shardy) są trzymane przez czas rozwoju modelu i **usuwane wraz z zamknięciem projektu** (art. 26³ ust. 3).
+9. **Przypięta rewizja HF:** `lonwi/grzybobranie-zdjecia` @ `faf75dca9cb5f012023003159f9351da9258f1ec` (290 789 zdjęć, zgodność z `SHA256SUMS`; 180 slugów treningowych + 91 tylko w ood-v1 = 271 unikalnych `species_slug`; `manifest_768.parquet`, 25 kolumn, bez `usage`).
+10. **Głowica K=67 zostaje** (28.11, 14:15 Europe/Warsaw). Lista klas: kolumna `class` w `configs/pokrycie-67.csv` (67 unikalnych slugów; plik używany w raporcie P0). Gatunki spoza listy to rezerwa: nie są klasami i na razie nie są materiałem OOD. `prepare_data` filtruje wyłącznie tą listą, **nigdy kolumną `set`**. Wykluczona rezerwa idzie do raportu.
+11. **Podzbiór UI:** oprócz ograniczenia licencyjnego (tylko CC0 / CC BY; NC, SA i pd-self wyłącznie treningowe) UI pomija 95 wierszy z `data/species-65-20261117/train_only_over_3.csv` (złączenie po `path`; `usage=train_only`, powód `over_3_per_observation`). To nie jest filtr treningowy. Plik nie jest jeszcze w repozytorium (gitignore `*.csv`) — trzeba go dodać z wyjątkiem, bez wymyślania wierszy.
 
 ## 2. R-01: algorytm podziału train/val/test
 
@@ -95,6 +98,9 @@ Dla każdego gatunku i splitu: liczba **unikalnych obserwacji**, **unikalnych au
 3. Destylacja do modelu mobilnego — po baseline.
 4. `data/png_cache/{224,256}` usunięte z dokumentacji; trening idzie z JPEG + P1.
 5. Kopie robocze trzymane przez rozwój modelu, usuwane przy zamknięciu projektu (art. 26³ ust. 3).
+6. Rewizja HF przypięta: `faf75dca9cb5f012023003159f9351da9258f1ec`.
+7. Głowica K=67; lista w `configs/pokrycie-67.csv`; rezerwa poza listą; bez filtrowania po `set`.
+8. Podzbiór UI: CC0/CC BY oraz wykluczenie 95 wierszy `train_only_over_3.csv` (po `path`).
 
 Nadal obowiązujące (nie były przedmiotem tej rundy, bez zmiany): cele 70/15/15 w unikalnych obserwacjach; minimum 5 obserwacji także w `train` (gatunek wymaga ≥ 15).
 
@@ -109,5 +115,6 @@ Nadal obowiązujące (nie były przedmiotem tej rundy, bez zmiany): cele 70/15/1
 
 **Dla agenta danych:**
 
-- Czekamy na **nowy pełny SHA commita** po wgraniu zestawu ~106 tys. zdjęć (ok. 65 gatunków). **Nie przypinać** bieżącej, niepełnej rewizji `338e87b7…`.
+- Rewizja `faf75dca9cb5f012023003159f9351da9258f1ec` jest przypięta w kontrakcie.
 - **Znane ryzyko ICC:** gdy konwersja do sRGB się nie powiedzie, piksele zostają bez konwersji i nie ma flagi. Czy warto dodać flagę w późniejszej rewizji manifestu?
+- Plik `data/species-65-20261117/train_only_over_3.csv` (95 wierszy) nie leży jeszcze w repozytorium ML — prośba o dostarczenie kopii do śledzenia w gicie.
