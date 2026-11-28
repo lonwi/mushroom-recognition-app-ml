@@ -30,12 +30,15 @@ What exists today is the project rule set, packaging metadata (`pyproject.toml`)
    * **Forbidden Sources:** `DF20` and `DF24` (both images and pre-trained/fine-tuned weights `*ft_df20*`), AI-generated images, and `ND` licenses are strictly prohibited.
    * **Backbone Weights:** Only `Apache-2.0`, `MIT`, or `BSD` models from `timm` are allowed. `ConvNeXt V2` (`CC BY-NC`) and `MobileViT`/`FastViT` (Apple license) are disabled by default.
 
+5. **Data Contract:** the contract between the data agent (private HF dataset) and the ML pipeline (image format, manifest, `prepare_data`, `pack_shards`, licence policy) is in [`DATA_CONTRACT.md`](DATA_CONTRACT.md); split and training decisions are in [`docs/decisions/2026-11-28-split-and-training-decisions.md`](docs/decisions/2026-11-28-split-and-training-decisions.md).
+
 ## 2. Repository Structure
 
 ```text
 .
 ├── AGENTS.md                  # Rules for AI agents / bots
 ├── README.md                  # Human & developer guide (this file)
+├── DATA_CONTRACT.md           # Data agent <-> ML pipeline contract
 ├── .env.example               # Template for HF repo IDs and optional token/salt path
 ├── pyproject.toml             # Python dependencies & pytest configuration
 ├── scripts/
@@ -55,7 +58,8 @@ What exists today is the project rule set, packaging metadata (`pyproject.toml`)
 │   └── decisions/
 │       ├── decyzje.md
 │       ├── krok3-decyzje.md
-│       └── 2026-11-16-schema-v1-clarifications.md
+│       ├── 2026-11-16-schema-v1-clarifications.md
+│       └── 2026-11-28-split-and-training-decisions.md
 ├── .agents/
 │   └── skills/                # Planned: local agent skills
 ├── data/                      # [GITIGNORED CONTENT] Working data (structure kept)
